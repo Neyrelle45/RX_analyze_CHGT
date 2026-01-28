@@ -13,7 +13,7 @@ from engine.postprocessing import classify_defects
 from engine.metrics import compute_metrics
 
 # =========================
-# CONFIG GLOBALE
+# CONFIG
 # =========================
 DEVICE = "cpu"
 st.set_page_config(layout="wide")
@@ -47,7 +47,7 @@ with st.sidebar:
     contrast = st.slider("Contraste", 0.5, 3.0, 1.0, 0.1)
     denoise  = st.slider("Réduction bruit", 0, 20, 5)
 
-    if st.button("🔄 RESET COMPLET"):
+    if st.button("🔄 RESET"):
         for k in st.session_state:
             st.session_state[k] = []
         st.experimental_rerun()
@@ -59,17 +59,14 @@ if not (model_file and config_file and mask_file):
     st.info("⬅️ Charge un modèle, un config.yaml et un masque pour démarrer.")
     st.stop()
 
-# =========================
-# LOAD CONFIG & MODEL
-# =========================
 cfg = yaml.safe_load(config_file)
 
 @st.cache_resource
 def load_model(weights):
-    model = UNet()
-    model.load_state_dict(torch.load(weights, map_location=DEVICE))
-    model.eval()
-    return model
+    m = UNet()
+    m.load_state_dict(torch.load(weights, map_location=DEVICE))
+    m.eval()
+    return m
 
 model = load_model(model_file)
 
@@ -94,13 +91,13 @@ mask_warp = cv2.warpAffine(mask_raw, M, (w, h))
 inspect_mask = mask_warp[:, :, 1] > 200
 
 if inspect_mask.sum() == 0:
-    st.error("❌ Le masque ajusté ne contient aucune zone verte exploitable.")
+    st.error("❌ Le masque ne contient aucune zone verte exploitable.")
     st.stop()
 
 # =========================
 # UPLOAD IMAGE RX
 # =========================
-st.subheader("📥 Charger une image RX")
+st.subheader("📥 Image RX")
 img_file = st.file_uploader("Image RX (.png / .jpg)", type=["png","jpg","jpeg"])
 
 if img_file:
@@ -130,20 +127,32 @@ if img_file:
         "defaut": int((pred == 2).sum())
     })
 
-    # --- Masques ---
     solder_mask = (pred == 1) & inspect_mask
     defect_mask = (pred == 2) & inspect_mask
 
-    # --- Post-processing ---
+    # =========================
+    # POST-PROCESSING
+    # =========================
     voids, lacks = classify_defects(defect_mask, solder_mask, inspect_mask, cfg)
     metrics = compute_metrics(voids, lacks, solder_mask.sum())
     metrics["image"] = img_file.name
 
-    # --- Overlay ---
+    # =========================
+    # VISUALISATION
+    # =========================
     overlay = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    overlay[solder_mask] = [120, 0, 0]   # soudure
-    overlay[defect_mask] = [0, 0, 255]   # défaut
 
+    # --- couche soudure (bleu discret)
+    blue = np.zeros_like(overlay)
+    blue[solder_mask] = [180, 0, 0]
+    overlay = cv2.addWeighted(overlay, 1.0, blue, 0.35, 0)
+
+    # --- couche défaut (rouge prioritaire)
+    red = np.zeros_like(overlay)
+    red[defect_mask] = [0, 0, 255]
+    overlay = cv2.addWeighted(overlay, 1.0, red, 0.85, 0)
+
+    # --- plus gros void
     if voids:
         v = max(voids, key=lambda r: r.area)
         y, x = v.centroid
@@ -155,31 +164,27 @@ if img_file:
             4
         )
 
-    # --- Sauvegarde session ---
+    # --- masque en transparence
+    mask_overlay = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    green = np.zeros_like(mask_overlay)
+    green[inspect_mask] = [0, 255, 0]
+    mask_overlay = cv2.addWeighted(mask_overlay, 1.0, green, 0.4, 0)
+
+    # =========================
+    # SAUVEGARDE SESSION
+    # =========================
     st.session_state.images.append(img)
     st.session_state.overlays.append(overlay)
     st.session_state.results.append(metrics)
     st.session_state.names.append(img_file.name)
 
-# =========================
-# AFFICHAGE PRINCIPAL
-# =========================
-if st.session_state.images:
-    idx = len(st.session_state.images) - 1
-
+    # =========================
+    # AFFICHAGE
+    # =========================
     col1, col2, col3 = st.columns(3)
-    col1.image(st.session_state.images[idx], caption="Original", clamp=True)
-# --- VISU masque en transparence ---
-mask_overlay = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-
-alpha = 0.4
-green = np.zeros_like(mask_overlay)
-green[inspect_mask] = [0, 255, 0]
-
-mask_overlay = cv2.addWeighted(mask_overlay, 1.0, green, alpha, 0)
-
-col2.image(mask_overlay, caption="Masque (overlay)", clamp=True)
-    col3.image(st.session_state.overlays[idx], caption="Analyse IA", clamp=True)
+    col1.image(img, caption="Original", clamp=True)
+    col2.image(mask_overlay, caption="Masque (overlay)", clamp=True)
+    col3.image(overlay, caption="Analyse IA", clamp=True)
 
 # =========================
 # TABLE RESULTATS
@@ -190,42 +195,18 @@ if st.session_state.results:
     st.dataframe(df)
 
 # =========================
-# VIGNETTES
-# =========================
-if st.session_state.overlays:
-    st.subheader("🖼️ Historique analyses")
-    cols = st.columns(min(5, len(st.session_state.overlays)))
-    for i, col in enumerate(cols):
-        col.image(
-            st.session_state.overlays[i],
-            caption=st.session_state.names[i],
-            width=150
-        )
-
-# =========================
 # EXPORT
 # =========================
 if st.session_state.results:
     st.subheader("📦 Export")
 
-    # CSV
     csv_bytes = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "📥 Télécharger résultats CSV",
-        csv_bytes,
-        "resultats_rx.csv"
-    )
+    st.download_button("📥 Télécharger CSV", csv_bytes, "resultats_rx.csv")
 
-    # ZIP images
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as z:
         for i, overlay in enumerate(st.session_state.overlays):
             _, buf = cv2.imencode(".png", overlay)
-            z.writestr(f"{st.session_state.names[i]}", buf.tobytes())
+            z.writestr(st.session_state.names[i], buf.tobytes())
 
-    st.download_button(
-        "📥 Télécharger images analysées (ZIP)",
-        zip_buffer.getvalue(),
-        "images_analysees.zip"
-    )
-
+    st.download_button("📥 Télécharger images analysées (ZIP)", zip_buffer.getvalue(), "images_analysees.zip")
