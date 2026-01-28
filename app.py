@@ -169,7 +169,16 @@ if st.session_state.images:
 
     col1, col2, col3 = st.columns(3)
     col1.image(st.session_state.images[idx], caption="Original", clamp=True)
-    col2.image(mask_warp, caption="Masque appliqué", clamp=True)
+# --- VISU masque en transparence ---
+mask_overlay = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+alpha = 0.4
+green = np.zeros_like(mask_overlay)
+green[inspect_mask] = [0, 255, 0]
+
+mask_overlay = cv2.addWeighted(mask_overlay, 1.0, green, alpha, 0)
+
+col2.image(mask_overlay, caption="Masque (overlay)", clamp=True)
     col3.image(st.session_state.overlays[idx], caption="Analyse IA", clamp=True)
 
 # =========================
