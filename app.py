@@ -210,4 +210,13 @@ if st.session_state.results:
     # ZIP images
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as z:
-        for i, overlay in enumerate(st.sess
+        for i, overlay in enumerate(st.session_state.overlays):
+            _, buf = cv2.imencode(".png", overlay)
+            z.writestr(f"{st.session_state.names[i]}", buf.tobytes())
+
+    st.download_button(
+        "📥 Télécharger images analysées (ZIP)",
+        zip_buffer.getvalue(),
+        "images_analysees.zip"
+    )
+
