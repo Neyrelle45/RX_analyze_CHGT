@@ -1,78 +1,58 @@
 import streamlit as st
-import cv2, os
+import cv2, yaml, torch
 import numpy as np
-import torch
 import pandas as pd
-from skimage.measure import label, regionprops
+from engine.model import UNetLite
+from engine.preprocessing import preprocess_rx
+from engine.postprocessing import classify_defects
+from engine.metrics import compute_metrics
+from zipfile import ZipFile
+import tempfile, os
 
-ROOT_PATH = "Analyze_RX"
-IMG_DIR = f"{ROOT_PATH}/rx_images"
-MASK_DIR = f"{ROOT_PATH}/masks"
-OUT_DIR = f"{ROOT_PATH}/resultats/images"
-MODEL_PATH = f"{ROOT_PATH}/models/BTC/model.pth"
+DEVICE = "cpu"
+st.title("📁 Analyse RX – Batch")
 
-os.makedirs(OUT_DIR, exist_ok=True)
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-class SimpleUNet(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.enc1 = torch.nn.Sequential(torch.nn.Conv2d(1,16,3,padding=1), torch.nn.ReLU())
-        self.enc2 = torch.nn.Sequential(torch.nn.Conv2d(16,32,3,padding=1), torch.nn.ReLU())
-        self.pool = torch.nn.MaxPool2d(2)
-        self.dec1 = torch.nn.Sequential(torch.nn.Conv2d(32,16,3,padding=1), torch.nn.ReLU())
-        self.out  = torch.nn.Conv2d(16,3,1)
-    def forward(self,x):
-        e1 = self.enc1(x)
-        e2 = self.enc2(self.pool(e1))
-        d1 = torch.nn.functional.interpolate(e2, scale_factor=2)
-        d1 = self.dec1(d1)
-        return self.out(d1)
+model_file = st.file_uploader("Modèle IA (.pth)", type=["pth"])
+config_file = st.file_uploader("Config modèle (.yaml)", type=["yaml","yml"])
+zip_file   = st.file_uploader("ZIP images RX", type=["zip"])
+mask_file  = st.file_uploader("Masque inspection (.png)", type=["png"])
 
 @st.cache_resource
-def load_model():
-    m = SimpleUNet().to(DEVICE)
-    m.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    m.eval()
-    return m
+def load_model(weights):
+    model = UNetLite()
+    model.load_state_dict(torch.load(weights, map_location=DEVICE))
+    model.eval()
+    return model
 
-model = load_model()
+if model_file and config_file and zip_file and mask_file:
+    cfg = yaml.safe_load(config_file)
+    model = load_model(model_file)
 
-def circularity(a,p): return 0 if p==0 else 4*np.pi*a/(p*p)
+    with tempfile.TemporaryDirectory() as tmp:
+        ZipFile(zip_file).extractall(tmp)
+        imgs = [f for f in os.listdir(tmp) if f.lower().endswith(('.png','.jpg'))]
 
-st.title("📁 Analyse RX BTC – Batch")
+        mask = cv2.imdecode(np.frombuffer(mask_file.read(), np.uint8), cv2.IMREAD_COLOR)
+        inspect = mask[:,:,1] > 200
 
-mask_name = st.selectbox("Masque fixe", os.listdir(MASK_DIR))
-run = st.button("🚀 Lancer l’analyse batch")
+        results = []
 
-if run:
-    mask = cv2.imread(os.path.join(MASK_DIR, mask_name))
-    mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)
-    inspect = mask[:,:,1] > 200
+        for name in imgs:
+            img = cv2.imread(os.path.join(tmp,name),0)
+            img_p = preprocess_rx(img)
+            img_n = img_p / 255.0
+            t = torch.tensor(img_n).unsqueeze(0).unsqueeze(0)
 
-    results = []
+            with torch.no_grad():
+                pred = torch.argmax(model(t),1)[0].numpy()
 
-    for name in os.listdir(IMG_DIR):
-        img = cv2.imread(os.path.join(IMG_DIR,name),0)
-        img_n = cv2.normalize(img,None,0,1,cv2.NORM_MINMAX)
+            solder = (pred==1) & inspect
+            defect = (pred==2) & inspect
 
-        timg = torch.tensor(img_n,dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(DEVICE)
-        with torch.no_grad():
-            pred = torch.argmax(model(timg),1)[0].cpu().numpy()
+            voids, lacks = classify_defects(defect, solder, inspect, cfg)
+            metrics = compute_metrics(voids, lacks, np.sum(solder))
+            metrics["image"] = name
+            results.append(metrics)
 
-        solder = (pred==1)&inspect
-        defect = (pred==2)&inspect
-
-        regions = regionprops(label(defect))
-        surf = np.sum(solder)
-        surf_def = sum([r.area for r in regions if r.area>20])
-
-        results.append({
-            "image":name,
-            "taux_defaut_%":round(surf_def/surf*100,2) if surf else 0
-        })
-
-    df = pd.DataFrame(results)
-    st.dataframe(df)
-    df.to_csv(f"{ROOT_PATH}/resultats/BTC_batch.csv", index=False)
-    st.success("✅ Analyse batch terminée")
+        df = pd.DataFrame(results)
+        st.dataframe(df)
