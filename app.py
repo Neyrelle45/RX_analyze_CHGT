@@ -316,4 +316,3 @@ if uploaded and model:
             "inspections.zip"
         )
 
-
