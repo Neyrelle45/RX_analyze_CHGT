@@ -5,8 +5,8 @@ TARGET_SIZE = 512
 
 
 def letterbox(img):
-    h, w = img.shape
 
+    h, w = img.shape
     scale = TARGET_SIZE / max(h, w)
 
     nh, nw = int(h * scale), int(w * scale)
@@ -16,7 +16,11 @@ def letterbox(img):
     canvas = np.zeros((TARGET_SIZE, TARGET_SIZE), dtype=img.dtype)
     canvas[:nh, :nw] = resized
 
-    return canvas, scale, (nh, nw)
+    # 🔥 mask pixels valides
+    valid_mask = np.zeros((TARGET_SIZE, TARGET_SIZE), dtype=bool)
+    valid_mask[:nh, :nw] = True
+
+    return canvas, valid_mask, scale, (nh, nw)
 
 
 def preprocess_rx(img, contrast=1.0, denoise=5):
