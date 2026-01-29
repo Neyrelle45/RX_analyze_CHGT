@@ -1,29 +1,58 @@
 import torch
 import numpy as np
-from engine.model import UNet
-
+import cv2
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 # ---------------------------------------------------------
-# LOAD MODEL — SAFE
+# LOAD MODEL — INDUSTRIAL SAFE
 # ---------------------------------------------------------
 
 def load_model(model_file):
+    """
+    Supports:
+    ✔ full saved model
+    ✔ state_dict
+    ✔ DataParallel
+    """
 
-    model = UNet(n_classes=3)
-
-    state = torch.load(
+    obj = torch.load(
         model_file,
         map_location=DEVICE
     )
 
-    # compatible DataParallel
-    if "state_dict" in state:
-        state = state["state_dict"]
+    # -------------------------------------------------
+    # CASE 1 — FULL MODEL (BEST)
+    # -------------------------------------------------
 
-    model.load_state_dict(state)
+    if isinstance(obj, torch.nn.Module):
+
+        model = obj
+
+    # -------------------------------------------------
+    # CASE 2 — state_dict only
+    # -------------------------------------------------
+
+    elif isinstance(obj, dict):
+
+        from engine.model import UNet
+
+        model = UNet()
+
+        if "state_dict" in obj:
+            obj = obj["state_dict"]
+
+        # remove "module." prefix if needed
+        new_state = {}
+
+        for k, v in obj.items():
+            new_state[k.replace("module.", "")] = v
+
+        model.load_state_dict(new_state)
+
+    else:
+        raise RuntimeError("Unsupported model format")
 
     model.to(DEVICE)
     model.eval()
@@ -32,7 +61,7 @@ def load_model(model_file):
 
 
 # ---------------------------------------------------------
-# PREDICT MASK — HEATMAP DRIVEN
+# PREDICTION — HEATMAP DRIVEN
 # ---------------------------------------------------------
 
 @torch.no_grad()
@@ -44,17 +73,10 @@ def predict_mask(model, tensor, threshold):
 
     probs = torch.softmax(logits, dim=1)[0]
 
-    # classes:
-    # 0 = background
-    # 1 = solder
-    # 2 = void / defect
+    # assume defect = LAST CHANNEL
+    defect_prob = probs[-1].cpu().numpy()
 
-    defect_prob = probs[2].cpu().numpy()
-
-    # -------------------------------------------------
-    # POST FILTER — removes salt noise
-    # -------------------------------------------------
-
+    # smooth heatmap
     defect_prob = cv2.GaussianBlur(
         defect_prob,
         (5,5),
@@ -64,7 +86,5 @@ def predict_mask(model, tensor, threshold):
     mask = defect_prob > threshold
 
     return mask, defect_prob
-
-
 
 
