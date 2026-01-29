@@ -7,7 +7,10 @@ import pandas as pd
 from engine.preprocessing import preprocess_rx, TARGET_SIZE
 from engine.inference import load_model, predict
 from engine.postprocessing import classify_defects
+import sys
+import os
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------------------------------------------
 # CONFIG
