@@ -29,9 +29,20 @@ if not(model_file and cfg_file and mask_file):
 cfg=yaml.safe_load(cfg_file)
 model=load_model(model_file)
 
-mask=cv2.imdecode(np.frombuffer(mask_file.read(),np.uint8),1)
-inspect_mask=mask[:,:,1]>200
+from engine.preprocessing import TARGET_SIZE
 
+mask = cv2.imdecode(
+    np.frombuffer(mask_file.read(), np.uint8),
+    cv2.IMREAD_COLOR
+)
+
+mask = cv2.resize(
+    mask,
+    (TARGET_SIZE, TARGET_SIZE),
+    interpolation=cv2.INTER_NEAREST   # ⚠️ CRITIQUE pour les masques
+)
+
+inspect_mask = mask[:,:,1] > 200
 img_file=st.file_uploader("RX image")
 
 if img_file:
