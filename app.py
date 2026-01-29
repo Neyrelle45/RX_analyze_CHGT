@@ -1,19 +1,9 @@
-# ---------------------------------------------------
-# FIX IMPORTS (CRITIQUE STREAMLIT CLOUD)
-# ---------------------------------------------------
-
 import sys
 import os
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
-
-
-# ---------------------------------------------------
-# IMPORTS
-# ---------------------------------------------------
 
 import streamlit as st
 import cv2
@@ -22,15 +12,15 @@ import numpy as np
 import pandas as pd
 
 from engine.preprocessing import preprocess_rx, TARGET_SIZE
-from engine.inference import load_model, predict
+from engine.inference import load_model
 
 
 # ---------------------------------------------------
-# CONFIG STREAMLIT
+# CONFIG
 # ---------------------------------------------------
 
 st.set_page_config(layout="wide")
-st.title("RX Void Analyzer")
+st.title("RX Void Analyzer — Advanced")
 
 
 # ---------------------------------------------------
@@ -39,22 +29,22 @@ st.title("RX Void Analyzer")
 
 with st.sidebar:
 
-    st.header("Model")
-
     model_file = st.file_uploader("Model (.pth)")
     cfg_file = st.file_uploader("Config (.yaml)")
-    mask_file = st.file_uploader("Mask (green=inspect)")
+    mask_file = st.file_uploader("Mask")
 
     st.divider()
 
     st.header("Detection")
 
-    defect_th = st.slider(
-        "Defect threshold",
-        0.10,
-        0.60,
-        0.28,
-        0.01
+    defect_th = st.slider("Base defect threshold", 0.05, 0.6, 0.20, 0.01)
+
+    dominance = st.slider(
+        "Defect dominance vs solder",
+        0.5,
+        2.0,
+        0.9,
+        0.05
     )
 
     st.divider()
@@ -63,27 +53,21 @@ with st.sidebar:
 
     tx = st.slider("Translate X", -250, 250, 0)
     ty = st.slider("Translate Y", -250, 250, 0)
-    scale = st.slider("Scale", 0.5, 1.5, 1.0)
-    angle = st.slider("Rotation", -15, 15, 0)
+    scale_mask = st.slider("Mask scale", 0.5, 1.5, 1.0)
+    angle = st.slider("Rotation", -10, 10, 0)
 
     st.divider()
 
-    st.header("Preprocessing")
+    st.header("Image")
 
-    contrast = st.slider("Contrast", 0.5, 3.0, 1.0)
-    denoise = st.slider("Denoise", 0, 20, 5)
+    contrast = st.slider("Contrast", 0.5, 3.0, 1.2)
+    denoise = st.slider("Denoise", 0, 20, 4)
 
-    show_heatmap = st.checkbox("Show defect heatmap")
+    show_heatmap = st.checkbox("Show heatmap")
 
 
 if not (model_file and cfg_file and mask_file):
-    st.info("Load model, config and mask to start.")
     st.stop()
-
-
-# ---------------------------------------------------
-# LOAD MODEL
-# ---------------------------------------------------
 
 cfg = yaml.safe_load(cfg_file)
 model = load_model(model_file)
@@ -94,9 +78,6 @@ model = load_model(model_file)
 # ---------------------------------------------------
 
 def crop_valid(img, shape):
-    """
-    Remove letterbox padding.
-    """
     nh, nw = shape
     return img[:nh, :nw]
 
@@ -114,98 +95,116 @@ if img_file:
         cv2.IMREAD_GRAYSCALE
     )
 
-    # ---------------- PREPROCESS ----------------
-
-    img_net, valid_mask, scale_factor, shape = preprocess_rx(
+    img_net, valid_mask, scale, shape = preprocess_rx(
         original,
         contrast,
         denoise
     )
 
-    # ---------------- MASK ----------------
+    # ---------------------------------------------------
+    # MASK — ALIGNED WITH LETTERBOX
+    # ---------------------------------------------------
 
-    mask = cv2.imdecode(
+    raw_mask = cv2.imdecode(
         np.frombuffer(mask_file.read(), np.uint8),
         cv2.IMREAD_COLOR
     )
 
-    mask = cv2.resize(
-        mask,
-        (TARGET_SIZE, TARGET_SIZE),
+    mh, mw = raw_mask.shape[:2]
+
+    new_h = int(mh * scale)
+    new_w = int(mw * scale)
+
+    resized_mask = cv2.resize(
+        raw_mask,
+        (new_w, new_h),
         interpolation=cv2.INTER_NEAREST
     )
 
+    mask_canvas = np.zeros((TARGET_SIZE, TARGET_SIZE, 3), dtype=np.uint8)
+    mask_canvas[:new_h, :new_w] = resized_mask
+
     center = (TARGET_SIZE // 2, TARGET_SIZE // 2)
 
-    M = cv2.getRotationMatrix2D(center, angle, scale)
+    M = cv2.getRotationMatrix2D(center, angle, scale_mask)
     M[:, 2] += [tx, ty]
 
-    mask = cv2.warpAffine(
-        mask,
+    mask_canvas = cv2.warpAffine(
+        mask_canvas,
         M,
         (TARGET_SIZE, TARGET_SIZE),
         flags=cv2.INTER_NEAREST
     )
 
-    inspect_mask = (mask[:, :, 1] > 200) & valid_mask
+    inspect_mask = (mask_canvas[:, :, 1] > 200) & valid_mask
 
     # ---------------------------------------------------
-    # INFERENCE
+    # MODEL
     # ---------------------------------------------------
 
-    pred, heat = predict(model, img_net, defect_th)
+    img_tensor = img_net.astype("float32") / 255.0
+    img_tensor = np.expand_dims(img_tensor, (0, 1))
 
-    solder = (pred == 1) & inspect_mask
-    defect = (pred == 2) & inspect_mask
+    import torch
+
+    with torch.no_grad():
+        logits = model(torch.from_numpy(img_tensor))
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+
+    prob_bg = probs[0]
+    prob_solder = probs[1]
+    prob_defect = probs[2]
+
+    # 🔥 ADVANCED DECISION
+    defect = (
+        (prob_defect > defect_th) &
+        (prob_defect > prob_solder * dominance) &
+        inspect_mask
+    )
+
+    solder = (
+        (prob_solder > prob_defect) &
+        inspect_mask
+    )
 
     # ---------------------------------------------------
-    # METRICS (INDUSTRIAL)
+    # METRICS
     # ---------------------------------------------------
 
     red_pixels = int(np.sum(defect))
     blue_pixels = int(np.sum(solder))
 
-    metal_mask = ((pred == 1) | (pred == 2)) & inspect_mask
-    metal_pixels = int(np.sum(metal_mask))
-
-    lack_ratio = (red_pixels / metal_pixels * 100) if metal_pixels > 0 else 0
+    metal_pixels = red_pixels + blue_pixels
+    lack_ratio = red_pixels / metal_pixels * 100 if metal_pixels > 0 else 0
 
     metrics = {
         "manque_%": round(lack_ratio, 2),
         "pixels_rouges": red_pixels,
-        "pixels_bleus": blue_pixels,
-        "pixels_metal": metal_pixels
+        "pixels_bleus": blue_pixels
     }
 
     # ---------------------------------------------------
     # VISUALS
     # ---------------------------------------------------
 
-    # ----- MASK OVERLAY -----
-
     mask_overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
-
     green = np.zeros_like(mask_overlay)
     green[inspect_mask] = [0, 255, 0]
-
     mask_overlay = cv2.addWeighted(mask_overlay, 1, green, 0.35, 0)
-
-    # ----- ANALYSIS OVERLAY -----
 
     overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
 
-    blue_layer = np.zeros_like(overlay)
-    blue_layer[solder] = [180, 0, 0]  # BLEU = soudure
+    blue = np.zeros_like(overlay)
+    blue[solder] = [180, 0, 0]
 
-    red_layer = np.zeros_like(overlay)
-    red_layer[defect] = [0, 0, 255]  # ROUGE = manque
+    red = np.zeros_like(overlay)
+    red[defect] = [0, 0, 255]
 
-    overlay = cv2.addWeighted(overlay, 1, blue_layer, 0.35, 0)
-    overlay = cv2.addWeighted(overlay, 1, red_layer, 0.85, 0)
+    overlay = cv2.addWeighted(overlay, 1, blue, 0.35, 0)
+    overlay = cv2.addWeighted(overlay, 1, red, 0.9, 0)
 
-    # remove padding
-    mask_overlay = crop_valid(mask_overlay, shape)
     overlay = crop_valid(overlay, shape)
+    mask_overlay = crop_valid(mask_overlay, shape)
 
     # ---------------------------------------------------
     # DISPLAY
@@ -213,36 +212,14 @@ if img_file:
 
     col1, col2, col3 = st.columns(3)
 
-    col1.image(
-        original,
-        caption="Original (ratio conservé)",
-        use_column_width=True
-    )
-
-    col2.image(
-        mask_overlay,
-        caption="Masque ajusté",
-        use_column_width=True
-    )
-
-    col3.image(
-        overlay,
-        caption="Analyse — BLEU=soudure | ROUGE=manque",
-        use_column_width=True
-    )
+    col1.image(original, caption="Original", use_column_width=True)
+    col2.image(mask_overlay, caption="Mask aligned", use_column_width=True)
+    col3.image(overlay, caption="Detection", use_column_width=True)
 
     if show_heatmap:
-        heat_crop = crop_valid(heat, shape)
+        heat = crop_valid(prob_defect, shape)
+        st.image(heat, clamp=True, caption="Defect heatmap")
 
-        st.image(
-            heat_crop,
-            clamp=True,
-            caption="Heatmap défaut"
-        )
-
-    st.divider()
-
-    st.subheader("Metrics")
     st.dataframe(pd.DataFrame([metrics]))
 
 
