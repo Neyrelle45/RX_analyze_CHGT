@@ -1,10 +1,10 @@
 import torch
 import numpy as np
-import cv2
 
 from .model import UNet
 
 DEVICE = "cpu"
+
 
 def load_model(weights):
 
@@ -15,15 +15,21 @@ def load_model(weights):
     return model
 
 
-def predict(model, img):
+def predict(model, img, defect_threshold=0.35):
 
     img = img.astype("float32") / 255.0
     t = torch.from_numpy(img).unsqueeze(0).unsqueeze(0)
 
     with torch.no_grad():
-        logits = model(t)
-        probs = torch.softmax(logits, dim=1)
-        pred = torch.argmax(probs,1)[0].cpu().numpy()
-        defect_prob = probs[0,2].cpu().numpy()
 
-    return pred, defect_prob
+        logits = model(t)
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+
+    solder = probs[1] > 0.5
+    defect = probs[2] > defect_threshold
+
+    pred = np.zeros_like(probs[0], dtype=np.uint8)
+    pred[solder] = 1
+    pred[defect] = 2
+
+    return pred, probs[2]
