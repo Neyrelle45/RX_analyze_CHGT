@@ -1,7 +1,12 @@
 import sys
 import os
 
+# ---------------------------------------------------
+# SAFE IMPORT (Streamlit Cloud)
+# ---------------------------------------------------
+
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -10,17 +15,18 @@ import cv2
 import yaml
 import numpy as np
 import pandas as pd
+import torch
 
 from engine.preprocessing import preprocess_rx, TARGET_SIZE
 from engine.inference import load_model
 
 
 # ---------------------------------------------------
-# CONFIG
+# PAGE
 # ---------------------------------------------------
 
 st.set_page_config(layout="wide")
-st.title("RX Void Analyzer — Advanced")
+st.title("RX Void Analyzer — Industrial")
 
 
 # ---------------------------------------------------
@@ -29,18 +35,26 @@ st.title("RX Void Analyzer — Advanced")
 
 with st.sidebar:
 
+    st.header("Model")
+
     model_file = st.file_uploader("Model (.pth)")
     cfg_file = st.file_uploader("Config (.yaml)")
-    mask_file = st.file_uploader("Mask")
+    mask_file = st.file_uploader("Mask (green = inspect)")
 
     st.divider()
 
     st.header("Detection")
 
-    defect_th = st.slider("Base defect threshold", 0.05, 0.6, 0.20, 0.01)
+    defect_th = st.slider(
+        "Base defect threshold",
+        0.05,
+        0.6,
+        0.20,
+        0.01
+    )
 
     dominance = st.slider(
-        "Defect dominance vs solder",
+        "Defect vs solder dominance",
         0.5,
         2.0,
         0.9,
@@ -58,32 +72,41 @@ with st.sidebar:
 
     st.divider()
 
-    st.header("Image")
+    st.header("Image preprocessing")
 
-    contrast = st.slider("Contrast", 0.5, 3.0, 1.2)
+    contrast = st.slider("Global contrast", 0.5, 3.0, 1.2)
     denoise = st.slider("Denoise", 0, 20, 4)
-    clahe_strength = st.slider(
-    "CLAHE local contrast",
-    0.0,
-    3.0,
-    1.2,
-    0.1
-)
 
-tophat_strength = st.slider(
-    "Void enhancer",
-    0,
-    5,
-    2
-)
-    show_heatmap = st.checkbox("Show heatmap")
+    clahe_strength = st.slider(
+        "CLAHE local contrast",
+        0.0,
+        3.0,
+        1.5,
+        0.1
+    )
+
+    tophat_strength = st.slider(
+        "Void enhancer (TopHat)",
+        0,
+        5,
+        2
+    )
+
+    show_heatmap = st.checkbox("Show defect heatmap")
 
 
 if not (model_file and cfg_file and mask_file):
+    st.info("Load model, config and mask.")
     st.stop()
+
+
+# ---------------------------------------------------
+# LOAD MODEL
+# ---------------------------------------------------
 
 cfg = yaml.safe_load(cfg_file)
 model = load_model(model_file)
+model.eval()
 
 
 # ---------------------------------------------------
@@ -91,6 +114,7 @@ model = load_model(model_file)
 # ---------------------------------------------------
 
 def crop_valid(img, shape):
+    """Remove letterbox padding."""
     nh, nw = shape
     return img[:nh, :nw]
 
@@ -108,16 +132,20 @@ if img_file:
         cv2.IMREAD_GRAYSCALE
     )
 
+    # ---------------------------------------------------
+    # PREPROCESS
+    # ---------------------------------------------------
+
     img_net, valid_mask, scale, shape = preprocess_rx(
-    original,
-    contrast,
-    denoise,
-    clahe_strength,
-    tophat_strength
-)
+        original,
+        contrast,
+        denoise,
+        clahe_strength,
+        tophat_strength
+    )
 
     # ---------------------------------------------------
-    # MASK — ALIGNED WITH LETTERBOX
+    # MASK — PERFECT LETTERBOX ALIGNMENT
     # ---------------------------------------------------
 
     raw_mask = cv2.imdecode(
@@ -154,13 +182,11 @@ if img_file:
     inspect_mask = (mask_canvas[:, :, 1] > 200) & valid_mask
 
     # ---------------------------------------------------
-    # MODEL
+    # MODEL INFERENCE
     # ---------------------------------------------------
 
     img_tensor = img_net.astype("float32") / 255.0
     img_tensor = np.expand_dims(img_tensor, (0, 1))
-
-    import torch
 
     with torch.no_grad():
         logits = model(torch.from_numpy(img_tensor))
@@ -170,7 +196,10 @@ if img_file:
     prob_solder = probs[1]
     prob_defect = probs[2]
 
-    # 🔥 ADVANCED DECISION
+    # ---------------------------------------------------
+    # INDUSTRIAL DECISION LOGIC
+    # ---------------------------------------------------
+
     defect = (
         (prob_defect > defect_th) &
         (prob_defect > prob_solder * dominance) &
@@ -178,24 +207,28 @@ if img_file:
     )
 
     solder = (
-        (prob_solder > prob_defect) &
+        (prob_solder >= prob_defect) &
         inspect_mask
     )
 
     # ---------------------------------------------------
-    # METRICS
+    # METRICS (CORRECT INDUSTRIAL)
     # ---------------------------------------------------
 
     red_pixels = int(np.sum(defect))
     blue_pixels = int(np.sum(solder))
 
     metal_pixels = red_pixels + blue_pixels
-    lack_ratio = red_pixels / metal_pixels * 100 if metal_pixels > 0 else 0
+
+    lack_ratio = (
+        red_pixels / metal_pixels * 100
+        if metal_pixels > 0 else 0
+    )
 
     metrics = {
         "manque_%": round(lack_ratio, 2),
-        "pixels_rouges": red_pixels,
-        "pixels_bleus": blue_pixels
+        "pixels_defaut": red_pixels,
+        "pixels_soudure": blue_pixels
     }
 
     # ---------------------------------------------------
@@ -203,17 +236,19 @@ if img_file:
     # ---------------------------------------------------
 
     mask_overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
+
     green = np.zeros_like(mask_overlay)
     green[inspect_mask] = [0, 255, 0]
+
     mask_overlay = cv2.addWeighted(mask_overlay, 1, green, 0.35, 0)
 
     overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
 
     blue = np.zeros_like(overlay)
-    blue[solder] = [180, 0, 0]
+    blue[solder] = [180, 0, 0]   # 🔵 SOLDER
 
     red = np.zeros_like(overlay)
-    red[defect] = [0, 0, 255]
+    red[defect] = [0, 0, 255]    # 🔴 DEFECT
 
     overlay = cv2.addWeighted(overlay, 1, blue, 0.35, 0)
     overlay = cv2.addWeighted(overlay, 1, red, 0.9, 0)
@@ -235,7 +270,10 @@ if img_file:
         heat = crop_valid(prob_defect, shape)
         st.image(heat, clamp=True, caption="Defect heatmap")
 
+    st.divider()
+    st.subheader("Metrics")
     st.dataframe(pd.DataFrame([metrics]))
+
 
 
 
