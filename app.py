@@ -65,7 +65,7 @@ if img_file:
     M[:,2] += [tx, ty]
 
     mask = cv2.warpAffine(mask, M, (TARGET_SIZE, TARGET_SIZE), flags=cv2.INTER_NEAREST)
-    inspect_mask = mask[:,:,1] > 200
+    inspect_mask = (mask[:,:,1] > 200) & valid_mask
 
     # ---------------- IA ----------------
 
