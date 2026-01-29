@@ -15,6 +15,13 @@ model_file=st.file_uploader("Model")
 cfg_file=st.file_uploader("Config")
 mask_file=st.file_uploader("Mask")
 
+st.sidebar.subheader("Mask alignment")
+
+tx = st.sidebar.slider("Translate X", -300, 300, 0)
+ty = st.sidebar.slider("Translate Y", -300, 300, 0)
+scale = st.sidebar.slider("Scale", 0.5, 1.5, 1.0)
+angle = st.sidebar.slider("Rotation", -15, 15, 0)
+
 if not(model_file and cfg_file and mask_file):
     st.stop()
 
@@ -23,16 +30,16 @@ model=load_model(model_file)
 
 from engine.preprocessing import TARGET_SIZE
 
-mask = cv2.imdecode(
-    np.frombuffer(mask_file.read(), np.uint8),
-    cv2.IMREAD_COLOR
-)
+h, w = img_p.shape
 
-mask = cv2.resize(
-    mask,
-    (TARGET_SIZE, TARGET_SIZE),
-    interpolation=cv2.INTER_NEAREST   # ⚠️ CRITIQUE pour les masques
-)
+mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+
+center = (w//2, h//2)
+
+M = cv2.getRotationMatrix2D(center, angle, scale)
+M[:,2] += [tx, ty]
+
+mask = cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_NEAREST)
 
 inspect_mask = mask[:,:,1] > 200
 
