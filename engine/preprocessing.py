@@ -1,123 +1,96 @@
 import cv2
 import numpy as np
 
+TARGET_SIZE = 512
 
-# =====================================================
-# CONSTANT
-# =====================================================
-
-TARGET_SIZE = 512   # doit matcher le training
-
-
-# =====================================================
-# LETTERBOX (NO DISTORTION)
-# =====================================================
-
-def letterbox(image, target=TARGET_SIZE):
-    """
-    Resize image WITHOUT distortion.
-    Keeps aspect ratio and pads with black.
-
-    Returns:
-        canvas
-        valid_mask
-        scale
-        new_shape
-    """
-
-    h, w = image.shape
-
-    scale = target / max(h, w)
-
-    new_h = int(h * scale)
-    new_w = int(w * scale)
-
-    resized = cv2.resize(
-        image,
-        (new_w, new_h),
-        interpolation=cv2.INTER_AREA
-    )
-
-    canvas = np.zeros((target, target), dtype=np.uint8)
-    canvas[:new_h, :new_w] = resized
-
-    valid_mask = np.zeros((target, target), dtype=bool)
-    valid_mask[:new_h, :new_w] = True
-
-    return canvas, valid_mask, scale, (new_h, new_w)
-
-
-# =====================================================
-# SAFE CONTRAST
-# =====================================================
-
-def apply_contrast(img, alpha):
-    """
-    Linear contrast.
-    NON destructive.
-    """
-
-    if alpha == 1.0:
-        return img
-
-    return cv2.convertScaleAbs(img, alpha=alpha, beta=0)
-
-
-# =====================================================
-# SAFE DENOISE
-# =====================================================
-
-def apply_denoise(img, strength):
-    """
-    Gentle denoise.
-
-    Avoid strong blur which kills void edges.
-    """
-
-    if strength == 0:
-        return img
-
-    return cv2.fastNlMeansDenoising(
-        img,
-        None,
-        h=strength,
-        templateWindowSize=7,
-        searchWindowSize=21
-    )
-
-
-# =====================================================
-# PREPROCESS RX (INDUSTRIAL)
-# =====================================================
 
 def preprocess_rx(
-    img,
-    contrast=1.0,
-    denoise=0,
-    clahe_clip=0,        # left for future — not applied
-    void_boost=0        # left for future inference engine
+    image,
+    contrast=1.4,
+    clahe_clip=2.5,
+    void_boost=2.0,
+    gamma=1.15
 ):
     """
-    Industrial-safe preprocessing.
+    Industrial RX preprocessing.
 
-    Steps:
-        1. grayscale
-        2. letterbox
-        3. gentle contrast
-        4. gentle denoise
+    Objectif :
+    - augmenter la séparation void / solder
+    - éviter le bruit artificiel
+    - garder les contours nets
     """
 
-    # ensure grayscale
-    if len(img.shape) == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # -----------------------------
+    # GRAYSCALE SAFE
+    # -----------------------------
 
-    # letterbox
-    img_net, valid_mask, scale, shape = letterbox(img)
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = image.copy()
 
-    # contrast
-    img_net = apply_contrast(img_net, contrast)
+    gray = gray.astype(np.uint8)
 
-    # denoise
-    img_net = apply_denoise(img_net, denoise)
+    # -----------------------------
+    # GLOBAL CONTRAST
+    # -----------------------------
 
-    return img_net, valid_mask, scale, shape
+    gray = cv2.convertScaleAbs(gray, alpha=contrast, beta=0)
+
+    # -----------------------------
+    # CLAHE (LOCAL CONTRAST)
+    # -----------------------------
+
+    clahe = cv2.createCLAHE(
+        clipLimit=clahe_clip,
+        tileGridSize=(8, 8)
+    )
+
+    gray = clahe.apply(gray)
+
+    # -----------------------------
+    # VOID BOOST — TOPHAT
+    # -----------------------------
+
+    kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE,
+        (9, 9)
+    )
+
+    tophat = cv2.morphologyEx(
+        gray,
+        cv2.MORPH_TOPHAT,
+        kernel
+    )
+
+    gray = cv2.addWeighted(
+        gray,
+        1.0,
+        tophat,
+        void_boost,
+        0
+    )
+
+    # -----------------------------
+    # GAMMA (micro contrast)
+    # -----------------------------
+
+    invGamma = 1.0 / gamma
+    table = np.array([
+        ((i / 255.0) ** invGamma) * 255
+        for i in range(256)
+    ]).astype("uint8")
+
+    gray = cv2.LUT(gray, table)
+
+    # -----------------------------
+    # NORMALIZE
+    # -----------------------------
+
+    img = gray.astype(np.float32) / 255.0
+
+    img = np.expand_dims(img, axis=0)
+    img = np.expand_dims(img, axis=0)
+
+    return img, gray
+
