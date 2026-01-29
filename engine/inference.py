@@ -1,61 +1,29 @@
 import torch
-import io
 import numpy as np
-import cv2
-
 from engine.model import UNet
 
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-# =========================================================
-# BUILD MODEL SAFE (signature tolerant)
-# =========================================================
-
-def build_model():
-
-    try:
-        model = UNet(n_classes=3)
-    except TypeError:
-        model = UNet()
-
-    return model
-
-
-# =========================================================
-# LOAD MODEL (bulletproof)
-# =========================================================
+# ---------------------------------------------------------
+# LOAD MODEL — SAFE
+# ---------------------------------------------------------
 
 def load_model(model_file):
 
-    if hasattr(model_file, "read"):
-        buffer = io.BytesIO(model_file.read())
-        obj = torch.load(buffer, map_location=DEVICE)
-    else:
-        obj = torch.load(model_file, map_location=DEVICE)
+    model = UNet(n_classes=3)
 
-    # ---------- FULL PICKLE ----------
-    if isinstance(obj, torch.nn.Module):
-        model = obj
+    state = torch.load(
+        model_file,
+        map_location=DEVICE
+    )
 
-    # ---------- STATE DICT ----------
-    elif isinstance(obj, dict):
+    # compatible DataParallel
+    if "state_dict" in state:
+        state = state["state_dict"]
 
-        if "model_state" in obj:
-            state = obj["model_state"]
-
-        elif "state_dict" in obj:
-            state = obj["state_dict"]
-
-        else:
-            state = obj
-
-        model = build_model()
-        model.load_state_dict(state)
-
-    else:
-        raise RuntimeError("Unsupported model format")
+    model.load_state_dict(state)
 
     model.to(DEVICE)
     model.eval()
@@ -63,54 +31,40 @@ def load_model(model_file):
     return model
 
 
-# =========================================================
-# RX INDUSTRIAL INFERENCE
-# =========================================================
+# ---------------------------------------------------------
+# PREDICT MASK — HEATMAP DRIVEN
+# ---------------------------------------------------------
 
-def infer_rx(model, img_tensor):
-    """
-    Industrial inference using LOGITS (NOT softmax).
+@torch.no_grad()
+def predict_mask(model, tensor, threshold):
 
-    Returns:
-        defect_score
-        solder_score
-    """
+    tensor = tensor.to(DEVICE)
 
-    with torch.no_grad():
+    logits = model(tensor)
 
-        logits = model(torch.from_numpy(img_tensor).to(DEVICE))
+    probs = torch.softmax(logits, dim=1)[0]
 
-        logits = logits[0].cpu().numpy()
+    # classes:
+    # 0 = background
+    # 1 = solder
+    # 2 = void / defect
 
-        logit_bg = logits[0]
-        logit_solder = logits[1]
-        logit_defect = logits[2]
+    defect_prob = probs[2].cpu().numpy()
 
-        # ⭐ DIFFERENTIAL SCORES (VERY IMPORTANT)
-        defect_score = logit_defect - logit_solder
-        solder_score = logit_solder - logit_defect
+    # -------------------------------------------------
+    # POST FILTER — removes salt noise
+    # -------------------------------------------------
 
-    return defect_score, solder_score
-
-
-# =========================================================
-# POST PROCESS (industrial cleanup)
-# =========================================================
-
-def clean_defects(defect_mask):
-    """
-    Remove pixel noise while keeping real voids.
-    """
-
-    kernel = np.ones((3,3), np.uint8)
-
-    cleaned = cv2.morphologyEx(
-        defect_mask.astype(np.uint8),
-        cv2.MORPH_OPEN,
-        kernel
+    defect_prob = cv2.GaussianBlur(
+        defect_prob,
+        (5,5),
+        0
     )
 
-    return cleaned.astype(bool)
+    mask = defect_prob > threshold
+
+    return mask, defect_prob
+
 
 
 
