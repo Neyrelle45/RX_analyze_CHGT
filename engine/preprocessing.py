@@ -25,7 +25,8 @@ def letterbox(img):
 
 def preprocess_rx(img, contrast=1.0, denoise=5):
 
-    img, scale, shape = letterbox(img)
+img, valid_mask, scale, shape = letterbox(img)
+return img, valid_mask, scale, shape
 
     img = cv2.convertScaleAbs(img, alpha=contrast)
 
