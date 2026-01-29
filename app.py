@@ -4,7 +4,7 @@ import yaml
 import numpy as np
 import pandas as pd
 
-from engine.preprocessing import preprocess_rx, TARGET_SIZE
+from .engine.preprocessing import preprocess_rx, TARGET_SIZE
 from engine.inference import load_model, predict
 from engine.postprocessing import classify_defects
 import sys
