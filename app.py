@@ -52,7 +52,7 @@ if img_file:
     original = cv2.imdecode(np.frombuffer(img_file.read(), np.uint8), 0)
 
     # preprocessing réseau
-    img_net, scale_factor, shape = preprocess_rx(original, contrast, denoise)
+   img_net, valid_mask, scale_factor, shape = preprocess_rx(original, contrast, denoise)
 
     # ---------------- MASK (SUR IMAGE RESEAU !) ----------------
 
