@@ -1,7 +1,7 @@
 import torch
 import io
 
-from engine.model import UNet
+from engine.model import UNet   # IMPORTANT : doit exister
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -9,41 +9,52 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_model(model_file):
 
-    # Read uploaded file safely
+    # read safely
     if hasattr(model_file, "read"):
         buffer = io.BytesIO(model_file.read())
-        obj = torch.load(buffer, map_location=DEVICE)
+        obj = torch.load(
+            buffer,
+            map_location=DEVICE,
+            weights_only=False   # CRITIQUE pour compat pickle
+        )
     else:
-        obj = torch.load(model_file, map_location=DEVICE)
+        obj = torch.load(
+            model_file,
+            map_location=DEVICE,
+            weights_only=False
+        )
 
     # -------------------------------------------------
-    # CASE 1 — FULL MODEL (best case)
+    # CASE 1 — state_dict
     # -------------------------------------------------
 
-    if isinstance(obj, torch.nn.Module):
+    if isinstance(obj, dict):
+
+        # checkpoint format
+        if "model_state" in obj:
+            state = obj["model_state"]
+
+        elif "state_dict" in obj:
+            state = obj["state_dict"]
+
+        else:
+            state = obj
+
+        model = UNet(n_classes=3)
+        model.load_state_dict(state)
+
+    # -------------------------------------------------
+    # CASE 2 — full pickle model
+    # -------------------------------------------------
+
+    elif isinstance(obj, torch.nn.Module):
 
         model = obj
-        model.to(DEVICE)
-        model.eval()
 
-        return model
-
-    # -------------------------------------------------
-    # CASE 2 — CHECKPOINT
-    # -------------------------------------------------
-
-    if isinstance(obj, dict) and "state_dict" in obj:
-        state = obj["state_dict"]
     else:
-        state = obj
-
-    # -------------------------------------------------
-    # BUILD MODEL
-    # -------------------------------------------------
-
-    model = UNet(n_classes=3)
-
-    model.load_state_dict(state, strict=True)
+        raise RuntimeError(
+            "Unsupported model format. Save with state_dict."
+        )
 
     model.to(DEVICE)
     model.eval()
