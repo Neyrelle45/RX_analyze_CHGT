@@ -62,7 +62,20 @@ with st.sidebar:
 
     contrast = st.slider("Contrast", 0.5, 3.0, 1.2)
     denoise = st.slider("Denoise", 0, 20, 4)
+    clahe_strength = st.slider(
+    "CLAHE local contrast",
+    0.0,
+    3.0,
+    1.2,
+    0.1
+)
 
+tophat_strength = st.slider(
+    "Void enhancer",
+    0,
+    5,
+    2
+)
     show_heatmap = st.checkbox("Show heatmap")
 
 
@@ -96,10 +109,12 @@ if img_file:
     )
 
     img_net, valid_mask, scale, shape = preprocess_rx(
-        original,
-        contrast,
-        denoise
-    )
+    original,
+    contrast,
+    denoise,
+    clahe_strength,
+    tophat_strength
+)
 
     # ---------------------------------------------------
     # MASK — ALIGNED WITH LETTERBOX
