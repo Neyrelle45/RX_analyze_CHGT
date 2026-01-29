@@ -1,195 +1,276 @@
+import sys
+import os
+
+# ---------------------------------------------------
+# SAFE IMPORT (Streamlit Cloud)
+# ---------------------------------------------------
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+import streamlit as st
 import cv2
+import yaml
 import numpy as np
+import pandas as pd
+import torch
+
+from engine.preprocessing import preprocess_rx, TARGET_SIZE
+from engine.inference import load_model
 
 
-# =====================================================
-# TARGET SIZE (réseau)
-# =====================================================
+# ---------------------------------------------------
+# PAGE
+# ---------------------------------------------------
 
-TARGET_SIZE = 512
+st.set_page_config(layout="wide")
+st.title("RX Void Analyzer — Industrial")
 
 
-# =====================================================
-# LETTERBOX (CRITIQUE — NE JAMAIS REMPLACER PAR RESIZE)
-# =====================================================
+# ---------------------------------------------------
+# SIDEBAR
+# ---------------------------------------------------
 
-def letterbox(img, target=TARGET_SIZE):
-    """
-    Resize WITHOUT distortion.
-    Pads remaining area.
+with st.sidebar:
 
-    Returns:
-        canvas
-        valid_mask
-        scale
-        (new_h, new_w)
-    """
+    st.header("Model")
 
-    h, w = img.shape
+    model_file = st.file_uploader("Model (.pth)")
+    cfg_file = st.file_uploader("Config (.yaml)")
+    mask_file = st.file_uploader("Mask (green = inspect)")
 
-    scale = target / max(h, w)
+    st.divider()
 
-    new_h = int(h * scale)
-    new_w = int(w * scale)
+    st.header("Detection")
 
-    resized = cv2.resize(
-        img,
-        (new_w, new_h),
-        interpolation=cv2.INTER_AREA
+    defect_th = st.slider(
+        "Base defect threshold",
+        0.05,
+        0.6,
+        0.20,
+        0.01
     )
 
-    canvas = np.zeros((target, target), dtype=np.uint8)
-    canvas[:new_h, :new_w] = resized
-
-    valid_mask = np.zeros((target, target), dtype=bool)
-    valid_mask[:new_h, :new_w] = True
-
-    return canvas, valid_mask, scale, (new_h, new_w)
-
-
-# =====================================================
-# CLAHE — LOCAL CONTRAST BOOSTER
-# (ULTRA efficace en RX)
-# =====================================================
-
-def apply_clahe(img, strength):
-
-    if strength <= 0:
-        return img
-
-    clip = 2.0 + strength * 4.0
-
-    clahe = cv2.createCLAHE(
-        clipLimit=clip,
-        tileGridSize=(8, 8)
+    dominance = st.slider(
+        "Defect vs solder dominance",
+        0.5,
+        2.0,
+        0.9,
+        0.05
     )
 
-    return clahe.apply(img)
+    st.divider()
 
+    st.header("Mask alignment")
 
-# =====================================================
-# BLACKHAT — VOID BOOSTER
-# (détecte zones sombres dans métal)
-# =====================================================
+    tx = st.slider("Translate X", -250, 250, 0)
+    ty = st.slider("Translate Y", -250, 250, 0)
+    scale_mask = st.slider("Mask scale", 0.5, 1.5, 1.0)
+    angle = st.slider("Rotation", -10, 10, 0)
 
-def apply_blackhat(img, strength):
+    st.divider()
 
-    if strength <= 0:
-        return img
+    st.header("Image preprocessing")
 
-    kernel_size = int(3 + strength * 4)
+    contrast = st.slider("Global contrast", 0.5, 3.0, 1.2)
+    denoise = st.slider("Denoise", 0, 20, 4)
 
-    # kernel impair obligatoire
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-
-    kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE,
-        (kernel_size, kernel_size)
-    )
-
-    blackhat = cv2.morphologyEx(
-        img,
-        cv2.MORPH_BLACKHAT,
-        kernel
-    )
-
-    # boost contrôlé
-    boosted = cv2.addWeighted(
-        img,
-        1.0,
-        blackhat,
+    clahe_strength = st.slider(
+        "CLAHE local contrast",
+        0.0,
+        3.0,
         1.5,
-        0
+        0.1
     )
 
-    return boosted
+    tophat_strength = st.slider(
+        "Void enhancer (TopHat)",
+        0,
+        5,
+        2
+    )
+
+    show_heatmap = st.checkbox("Show defect heatmap")
 
 
-# =====================================================
-# NORMALISATION DYNAMIQUE
-# (souvent négligée — énorme gain)
-# =====================================================
-
-def normalize_dynamic(img):
-    """
-    Étire les niveaux de gris
-    sans amplifier le bruit.
-    """
-
-    p2, p98 = np.percentile(img, (2, 98))
-
-    if p98 - p2 < 10:
-        return img
-
-    img = np.clip(img, p2, p98)
-    img = ((img - p2) / (p98 - p2) * 255).astype(np.uint8)
-
-    return img
+if not (model_file and cfg_file and mask_file):
+    st.info("Load model, config and mask.")
+    st.stop()
 
 
-# =====================================================
-# PREPROCESS RX — VERSION INDUSTRIELLE
-# =====================================================
+# ---------------------------------------------------
+# LOAD MODEL
+# ---------------------------------------------------
 
-def preprocess_rx(
-    img,
-    contrast=1.2,
-    denoise=4,
-    clahe_strength=1.5,
-    blackhat_strength=2
-):
+cfg = yaml.safe_load(cfg_file)
+model = load_model(model_file)
+model.eval()
 
-    # -------------------------------------------------
-    # GRAYSCALE SAFE
-    # -------------------------------------------------
 
-    if len(img.shape) == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+# ---------------------------------------------------
+# UTILS
+# ---------------------------------------------------
 
-    # -------------------------------------------------
-    # NORMALISATION (FAIBLE MAIS PUISSANTE)
-    # -------------------------------------------------
+def crop_valid(img, shape):
+    """Remove letterbox padding."""
+    nh, nw = shape
+    return img[:nh, :nw]
 
-    img = normalize_dynamic(img)
 
-    # -------------------------------------------------
-    # CLAHE
-    # -------------------------------------------------
+# ---------------------------------------------------
+# IMAGE
+# ---------------------------------------------------
 
-    img = apply_clahe(img, clahe_strength)
+img_file = st.file_uploader("RX image")
 
-    # -------------------------------------------------
-    # VOID BOOSTER
-    # -------------------------------------------------
+if img_file:
 
-    img = apply_blackhat(img, blackhat_strength)
+    original = cv2.imdecode(
+        np.frombuffer(img_file.read(), np.uint8),
+        cv2.IMREAD_GRAYSCALE
+    )
 
-    # -------------------------------------------------
-    # CONTRASTE GLOBAL (léger seulement)
-    # -------------------------------------------------
+    # ---------------------------------------------------
+    # PREPROCESS
+    # ---------------------------------------------------
 
-    if contrast != 1.0:
-        img = cv2.convertScaleAbs(img, alpha=contrast)
+    img_net, valid_mask, scale, shape = preprocess_rx(
+        original,
+        contrast,
+        denoise,
+        clahe_strength,
+        tophat_strength
+    )
 
-    # -------------------------------------------------
-    # DENOISE RX
-    # (garde les blobs)
-    # -------------------------------------------------
+    # ---------------------------------------------------
+    # MASK — PERFECT LETTERBOX ALIGNMENT
+    # ---------------------------------------------------
 
-    if denoise > 0:
-        img = cv2.fastNlMeansDenoising(
-            img,
-            None,
-            h=denoise,
-            templateWindowSize=7,
-            searchWindowSize=21
-        )
+    raw_mask = cv2.imdecode(
+        np.frombuffer(mask_file.read(), np.uint8),
+        cv2.IMREAD_COLOR
+    )
 
-    # -------------------------------------------------
-    # LETTERBOX (TOUJOURS EN DERNIER)
-    # -------------------------------------------------
+    mh, mw = raw_mask.shape[:2]
 
-    img_net, valid_mask, scale, shape = letterbox(img)
+    new_h = int(mh * scale)
+    new_w = int(mw * scale)
 
-    return img_net, valid_mask, scale, shape
+    resized_mask = cv2.resize(
+        raw_mask,
+        (new_w, new_h),
+        interpolation=cv2.INTER_NEAREST
+    )
+
+    mask_canvas = np.zeros((TARGET_SIZE, TARGET_SIZE, 3), dtype=np.uint8)
+    mask_canvas[:new_h, :new_w] = resized_mask
+
+    center = (TARGET_SIZE // 2, TARGET_SIZE // 2)
+
+    M = cv2.getRotationMatrix2D(center, angle, scale_mask)
+    M[:, 2] += [tx, ty]
+
+    mask_canvas = cv2.warpAffine(
+        mask_canvas,
+        M,
+        (TARGET_SIZE, TARGET_SIZE),
+        flags=cv2.INTER_NEAREST
+    )
+
+    inspect_mask = (mask_canvas[:, :, 1] > 200) & valid_mask
+
+    # ---------------------------------------------------
+    # MODEL INFERENCE
+    # ---------------------------------------------------
+
+    img_tensor = img_net.astype("float32") / 255.0
+    img_tensor = np.expand_dims(img_tensor, (0, 1))
+
+    with torch.no_grad():
+        logits = model(torch.from_numpy(img_tensor))
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+
+    prob_bg = probs[0]
+    prob_solder = probs[1]
+    prob_defect = probs[2]
+
+    # ---------------------------------------------------
+    # INDUSTRIAL DECISION LOGIC
+    # ---------------------------------------------------
+
+    defect = (
+        (prob_defect > defect_th) &
+        (prob_defect > prob_solder * dominance) &
+        inspect_mask
+    )
+
+    solder = (
+        (prob_solder >= prob_defect) &
+        inspect_mask
+    )
+
+    # ---------------------------------------------------
+    # METRICS (CORRECT INDUSTRIAL)
+    # ---------------------------------------------------
+
+    red_pixels = int(np.sum(defect))
+    blue_pixels = int(np.sum(solder))
+
+    metal_pixels = red_pixels + blue_pixels
+
+    lack_ratio = (
+        red_pixels / metal_pixels * 100
+        if metal_pixels > 0 else 0
+    )
+
+    metrics = {
+        "manque_%": round(lack_ratio, 2),
+        "pixels_defaut": red_pixels,
+        "pixels_soudure": blue_pixels
+    }
+
+    # ---------------------------------------------------
+    # VISUALS
+    # ---------------------------------------------------
+
+    mask_overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
+
+    green = np.zeros_like(mask_overlay)
+    green[inspect_mask] = [0, 255, 0]
+
+    mask_overlay = cv2.addWeighted(mask_overlay, 1, green, 0.35, 0)
+
+    overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
+
+    blue = np.zeros_like(overlay)
+    blue[solder] = [180, 0, 0]   # 🔵 SOLDER
+
+    red = np.zeros_like(overlay)
+    red[defect] = [0, 0, 255]    # 🔴 DEFECT
+
+    overlay = cv2.addWeighted(overlay, 1, blue, 0.35, 0)
+    overlay = cv2.addWeighted(overlay, 1, red, 0.9, 0)
+
+    overlay = crop_valid(overlay, shape)
+    mask_overlay = crop_valid(mask_overlay, shape)
+
+    # ---------------------------------------------------
+    # DISPLAY
+    # ---------------------------------------------------
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.image(original, caption="Original", use_column_width=True)
+    col2.image(mask_overlay, caption="Mask aligned", use_column_width=True)
+    col3.image(overlay, caption="Detection", use_column_width=True)
+
+    if show_heatmap:
+        heat = crop_valid(prob_defect, shape)
+        st.image(heat, clamp=True, caption="Defect heatmap")
+
+    st.divider()
+    st.subheader("Metrics")
+    st.dataframe(pd.DataFrame([metrics]))
+
