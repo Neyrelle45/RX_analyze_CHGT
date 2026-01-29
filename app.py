@@ -1,19 +1,32 @@
+# ---------------------------------------------------
+# FIX IMPORTS (CRITIQUE STREAMLIT CLOUD)
+# ---------------------------------------------------
+
+import sys
+import os
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+
+# ---------------------------------------------------
+# IMPORTS
+# ---------------------------------------------------
+
 import streamlit as st
 import cv2
 import yaml
 import numpy as np
 import pandas as pd
 
-from .engine.preprocessing import preprocess_rx, TARGET_SIZE
+from engine.preprocessing import preprocess_rx, TARGET_SIZE
 from engine.inference import load_model, predict
-from engine.postprocessing import classify_defects
-import sys
-import os
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------------------------------------------
-# CONFIG
+# CONFIG STREAMLIT
 # ---------------------------------------------------
 
 st.set_page_config(layout="wide")
@@ -29,8 +42,8 @@ with st.sidebar:
     st.header("Model")
 
     model_file = st.file_uploader("Model (.pth)")
-    cfg_file = st.file_uploader("config.yaml")
-    mask_file = st.file_uploader("Mask (green = inspect)")
+    cfg_file = st.file_uploader("Config (.yaml)")
+    mask_file = st.file_uploader("Mask (green=inspect)")
 
     st.divider()
 
@@ -38,10 +51,10 @@ with st.sidebar:
 
     defect_th = st.slider(
         "Defect threshold",
-        min_value=0.10,
-        max_value=0.60,
-        value=0.30,
-        step=0.01
+        0.10,
+        0.60,
+        0.28,
+        0.01
     )
 
     st.divider()
@@ -89,7 +102,7 @@ def crop_valid(img, shape):
 
 
 # ---------------------------------------------------
-# LOAD IMAGE
+# IMAGE
 # ---------------------------------------------------
 
 img_file = st.file_uploader("RX image")
@@ -136,14 +149,18 @@ if img_file:
 
     inspect_mask = (mask[:, :, 1] > 200) & valid_mask
 
-    # ---------------- INFERENCE ----------------
+    # ---------------------------------------------------
+    # INFERENCE
+    # ---------------------------------------------------
 
     pred, heat = predict(model, img_net, defect_th)
 
     solder = (pred == 1) & inspect_mask
     defect = (pred == 2) & inspect_mask
 
-    # ---------------- METRICS (INDUSTRIAL) ----------------
+    # ---------------------------------------------------
+    # METRICS (INDUSTRIAL)
+    # ---------------------------------------------------
 
     red_pixels = int(np.sum(defect))
     blue_pixels = int(np.sum(solder))
@@ -161,7 +178,7 @@ if img_file:
     }
 
     # ---------------------------------------------------
-    # VISUALIZATION
+    # VISUALS
     # ---------------------------------------------------
 
     # ----- MASK OVERLAY -----
@@ -186,8 +203,7 @@ if img_file:
     overlay = cv2.addWeighted(overlay, 1, blue_layer, 0.35, 0)
     overlay = cv2.addWeighted(overlay, 1, red_layer, 0.85, 0)
 
-    # ----- REMOVE LETTERBOX -----
-
+    # remove padding
     mask_overlay = crop_valid(mask_overlay, shape)
     overlay = crop_valid(overlay, shape)
 
@@ -227,7 +243,7 @@ if img_file:
     st.divider()
 
     st.subheader("Metrics")
-
     st.dataframe(pd.DataFrame([metrics]))
+
 
 
