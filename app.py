@@ -1,284 +1,284 @@
-import sys
-import os
-import io
-import zipfile
-
 import streamlit as st
 import numpy as np
 import cv2
 import pandas as pd
-import torch
+import zipfile
+import io
+from PIL import Image
+
+from engine.preprocessing import preprocess_rx
+from engine.inference import load_model, predict_mask
 
 
-# ---------------------------------------------------
-# PATH FIX (Streamlit Cloud safe)
-# ---------------------------------------------------
-
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
-
-from engine.preprocessing import preprocess_rx, TARGET_SIZE
-from engine.inference import load_model
+st.set_page_config(layout="wide")
+st.title("RX Void Analyzer — Industrial Edition")
 
 
-# ---------------------------------------------------
+# =====================================================
 # SESSION STATE
-# ---------------------------------------------------
+# =====================================================
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+if "results" not in st.session_state:
+    st.session_state.results = []
 
 if "saved_images" not in st.session_state:
     st.session_state.saved_images = []
 
 
-# ---------------------------------------------------
-# PAGE
-# ---------------------------------------------------
+# =====================================================
+# SIDEBAR — MODEL
+# =====================================================
 
-st.set_page_config(layout="wide")
-st.title("RX Void Analyzer — Industrial Stable Build")
+st.sidebar.header("Model")
 
+model_file = st.sidebar.file_uploader(
+    "Load model (.pth)",
+    type=["pth"]
+)
 
-# ===================================================
-# SIDEBAR
-# ===================================================
-
-with st.sidebar:
-
-    st.header("Model")
-
-    model_file = st.file_uploader("Load model (.pth)", type=["pth"])
-    mask_file = st.file_uploader("Load inspection mask", type=["png","jpg"])
-
-    st.divider()
-
-    st.header("Detection")
-
-    defect_th = st.slider(
-        "Defect threshold",
-        0.05,
-        0.6,
-        0.22,
-        0.01
-    )
-
-    dominance = st.slider(
-        "Defect vs solder dominance",
-        0.6,
-        1.5,
-        0.85,
-        0.05
-    )
-
-    st.divider()
-
-    st.header("Mask alignment")
-
-    tx = st.slider("Translate X", -250, 250, 0)
-    ty = st.slider("Translate Y", -250, 250, 0)
-    scale_mask = st.slider("Scale", 0.7, 1.3, 1.0)
-    rot = st.slider("Rotation", -15, 15, 0)
-
-    st.divider()
-
-    st.header("Image preprocessing")
-
-    contrast = st.slider("Contrast", 0.7, 1.6, 1.1)
-    denoise = st.slider("Denoise", 0, 6, 2)
-
-    show_heatmap = st.checkbox("Show defect heatmap")
+mask_file = st.sidebar.file_uploader(
+    "Load inspection mask",
+    type=["png", "jpg"]
+)
 
 
-if not model_file or not mask_file:
-    st.info("Please load a model and a mask.")
-    st.stop()
+model = None
+if model_file:
+    model = load_model(model_file)
 
 
-# ===================================================
-# LOAD MODEL
-# ===================================================
+# =====================================================
+# SIDEBAR — DETECTION
+# =====================================================
 
-model = load_model(model_file)
-model.eval()
+st.sidebar.header("Detection")
+
+threshold = st.sidebar.slider(
+    "Defect threshold",
+    0.05,
+    0.6,
+    0.25,
+    0.01
+)
+
+dominance = st.sidebar.slider(
+    "Defect vs solder dominance",
+    0.5,
+    2.0,
+    1.0,
+    0.05
+)
 
 
-# ===================================================
-# IMAGE UPLOAD
-# ===================================================
+# =====================================================
+# SIDEBAR — MASK ALIGNMENT (FINESSE)
+# =====================================================
 
-img_file = st.file_uploader("Upload RX image", type=["png","jpg","jpeg"])
+st.sidebar.header("Mask alignment")
 
-if img_file:
+tx = st.sidebar.slider("Translate X", -10, 10, 0, 1)
+ty = st.sidebar.slider("Translate Y", -10, 10, 0, 1)
 
-    original = cv2.imdecode(
-        np.frombuffer(img_file.read(), np.uint8),
-        cv2.IMREAD_GRAYSCALE
-    )
+scale = st.sidebar.slider(
+    "Scale",
+    0.97,
+    1.03,
+    1.0,
+    0.002
+)
 
-    img_net, valid_mask, scale, shape = preprocess_rx(
+angle = st.sidebar.slider(
+    "Rotation",
+    -2.0,
+    2.0,
+    0.0,
+    0.1
+)
+
+
+# =====================================================
+# SIDEBAR — RX PREPROCESSING
+# =====================================================
+
+st.sidebar.header("RX preprocessing")
+
+contrast = st.sidebar.slider(
+    "Global contrast",
+    0.8,
+    2.2,
+    1.4,
+    0.05
+)
+
+clahe = st.sidebar.slider(
+    "Local contrast (CLAHE)",
+    1.0,
+    4.0,
+    2.5,
+    0.1
+)
+
+void_boost = st.sidebar.slider(
+    "Void enhancer",
+    0.0,
+    4.0,
+    2.0,
+    0.1
+)
+
+gamma = st.sidebar.slider(
+    "Gamma micro-contrast",
+    0.8,
+    1.6,
+    1.15,
+    0.05
+)
+
+show_heatmap = st.sidebar.checkbox("Show defect heatmap", value=True)
+
+
+# =====================================================
+# IMAGE INPUT
+# =====================================================
+
+uploaded = st.file_uploader(
+    "RX image",
+    type=["png", "jpg", "jpeg"]
+)
+
+if uploaded and model:
+
+    original = np.array(Image.open(uploaded).convert("RGB"))
+
+    # PREPROCESS
+    tensor, processed = preprocess_rx(
         original,
         contrast,
-        denoise,
-        0,
-        0
+        clahe,
+        void_boost,
+        gamma
     )
 
-    nh, nw = shape
-
-
-    # ===================================================
-    # MASK (LETTERBOX SAFE + ALIGNMENT)
-    # ===================================================
-
-    raw_mask = cv2.imdecode(
-        np.frombuffer(mask_file.read(), np.uint8),
-        cv2.IMREAD_COLOR
+    # PREDICT
+    pred_mask, heatmap = predict_mask(
+        model,
+        tensor,
+        threshold
     )
 
-    mh, mw = raw_mask.shape[:2]
+    # =====================================================
+    # MASK ALIGNMENT
+    # =====================================================
 
-    new_h = int(mh * scale)
-    new_w = int(mw * scale)
+    inspect_mask = None
 
-    resized_mask = cv2.resize(
-        raw_mask,
-        (new_w, new_h),
-        interpolation=cv2.INTER_NEAREST
+    if mask_file:
+        mask_img = np.array(Image.open(mask_file).convert("L"))
+
+        h, w = processed.shape
+
+        mask_img = cv2.resize(mask_img, (w, h))
+
+        M = cv2.getRotationMatrix2D(
+            (w//2, h//2),
+            angle,
+            scale
+        )
+
+        M[:, 2] += [tx, ty]
+
+        aligned = cv2.warpAffine(
+            mask_img,
+            M,
+            (w, h)
+        )
+
+        inspect_mask = aligned > 127
+
+        pred_mask = pred_mask & inspect_mask
+
+
+    # =====================================================
+    # COLORS
+    # =====================================================
+
+    overlay = original.copy()
+
+    overlay = cv2.resize(
+        overlay,
+        (processed.shape[1], processed.shape[0])
     )
 
-    # rotation + scale
-    M = cv2.getRotationMatrix2D(
-        (new_w//2, new_h//2),
-        rot,
-        scale_mask
-    )
+    void_pixels = pred_mask
+    solder_pixels = (~pred_mask)
 
-    transformed = cv2.warpAffine(
-        resized_mask,
-        M,
-        (new_w, new_h),
-        flags=cv2.INTER_NEAREST,
-        borderValue=(0,0,0)
-    )
+    if inspect_mask is not None:
+        solder_pixels &= inspect_mask
 
-    canvas = np.zeros((TARGET_SIZE, TARGET_SIZE, 3), dtype=np.uint8)
+    # VOID = RED
+    overlay[void_pixels] = [255, 0, 0]
 
-    x1 = max(tx, 0)
-    y1 = max(ty, 0)
-
-    x2 = min(TARGET_SIZE, tx + new_w)
-    y2 = min(TARGET_SIZE, ty + new_h)
-
-    canvas[y1:y2, x1:x2] = transformed[
-        max(-ty,0):max(-ty,0)+(y2-y1),
-        max(-tx,0):max(-tx,0)+(x2-x1)
-    ]
-
-    inspect_mask = (canvas[:,:,1] > 200) & valid_mask
+    # SOLDER = YELLOW
+    overlay[solder_pixels] = [255, 255, 0]
 
 
-    # ===================================================
-    # INFERENCE
-    # ===================================================
-
-    img_tensor = img_net.astype("float32") / 255.0
-    img_tensor = np.expand_dims(img_tensor, (0,1))
-
-    with torch.no_grad():
-        logits = model(torch.from_numpy(img_tensor))
-        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
-
-    prob_solder = probs[1]
-    prob_defect = probs[2]
-
-
-    # ===================================================
-    # INDUSTRIAL DECISION LOGIC
-    # ===================================================
-
-    defect = (
-        (prob_defect > defect_th) &
-        (prob_defect > prob_solder * dominance) &
-        inspect_mask
-    )
-
-    solder = (
-        (prob_solder > 0.30) &
-        ~defect &
-        inspect_mask
-    )
-
-
-    # remove padding
-    img_crop = img_net[:nh, :nw]
-    defect_crop = defect[:nh, :nw]
-    solder_crop = solder[:nh, :nw]
-    mask_crop = inspect_mask[:nh, :nw]
-
-
-    # ===================================================
-    # OVERLAY COLORS
-    # ===================================================
-
-    overlay = cv2.cvtColor(img_crop, cv2.COLOR_GRAY2BGR)
-
-    overlay[solder_crop] = (0,255,255)   # JAUNE
-    overlay[defect_crop] = (0,0,255)     # ROUGE
-
-    overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
-
-    mask_vis = cv2.cvtColor(img_crop, cv2.COLOR_GRAY2BGR)
-    mask_vis[mask_crop] = (0,180,0)
-    mask_vis = cv2.cvtColor(mask_vis, cv2.COLOR_BGR2RGB)
-
-
-    # ===================================================
+    # =====================================================
     # METRICS
-    # ===================================================
+    # =====================================================
 
-    red_pixels = int(np.sum(defect_crop))
-    yellow_pixels = int(np.sum(solder_crop))
+    void_count = np.sum(void_pixels)
+    solder_count = np.sum(solder_pixels)
 
-    metal_pixels = red_pixels + yellow_pixels
+    denom = void_count + solder_count
 
-    lack_ratio = (
-        red_pixels / metal_pixels * 100
-        if metal_pixels > 0 else 0
-    )
-
-    metrics = {
-        "manque_%": round(lack_ratio,2),
-        "pixels_defaut": red_pixels,
-        "pixels_soudure": yellow_pixels
-    }
+    manque_pct = (void_count / denom * 100) if denom > 0 else 0
 
 
-    # ===================================================
+    # =====================================================
     # DISPLAY
-    # ===================================================
+    # =====================================================
 
     col1, col2, col3 = st.columns(3)
 
-    col1.image(original, use_column_width=True)
-    col2.image(mask_vis, use_column_width=True)
-    col3.image(overlay_rgb, use_column_width=True)
+    col1.image(original, caption="Original")
+
+    if inspect_mask is not None:
+        mask_vis = original.copy()
+        mask_vis = cv2.resize(mask_vis, (processed.shape[1], processed.shape[0]))
+        mask_vis[inspect_mask] = [0,255,0]
+
+        col2.image(mask_vis, caption="Mask aligned")
+
+    col3.image(overlay, caption="Detection — RED=void | YELLOW=solder")
+
 
     if show_heatmap:
-        heat = prob_defect[:nh, :nw]
-        st.image(heat, clamp=True)
+        st.image(
+            (heatmap * 255).astype(np.uint8),
+            caption="Defect heatmap"
+        )
 
-    st.dataframe(pd.DataFrame([metrics]))
+
+    # =====================================================
+    # TABLE
+    # =====================================================
+
+    df = pd.DataFrame([{
+        "manque_%": round(manque_pct,2),
+        "pixels_defaut": int(void_count),
+        "pixels_soudure": int(solder_count)
+    }])
+
+    st.dataframe(df)
 
 
-    # ===================================================
-    # SAVE
-    # ===================================================
+    # =====================================================
+    # SAVE INSPECTION
+    # =====================================================
 
     if st.button("Save inspection"):
 
-        st.session_state.history.append(metrics)
+        st.session_state.results.append(df.iloc[0])
 
         _, buffer = cv2.imencode(".png", overlay)
         st.session_state.saved_images.append(buffer.tobytes())
@@ -286,44 +286,34 @@ if img_file:
         st.success("Inspection saved ✔")
 
 
-# ===================================================
-# HISTORY + EXPORT
-# ===================================================
+    # =====================================================
+    # EXPORT CSV
+    # =====================================================
 
-if st.session_state.history:
+    if st.session_state.results:
 
-    st.subheader("Inspection history")
+        results_df = pd.DataFrame(st.session_state.results)
 
-    df = pd.DataFrame(st.session_state.history)
-    st.dataframe(df)
+        csv = results_df.to_csv(index=False).encode()
 
-    csv = df.to_csv(index=False).encode()
+        st.download_button(
+            "Download CSV",
+            csv,
+            "inspection_results.csv"
+        )
 
-    st.download_button(
-        "Download CSV",
-        csv,
-        "inspection_results.csv"
-    )
 
-    zip_buffer = io.BytesIO()
+        # ZIP images
+        zip_buffer = io.BytesIO()
 
-    with zipfile.ZipFile(zip_buffer, "w") as z:
+        with zipfile.ZipFile(zip_buffer, "w") as z:
+            for i, img in enumerate(st.session_state.saved_images):
+                z.writestr(f"inspection_{i}.png", img)
 
-        for i, img in enumerate(st.session_state.saved_images):
-            z.writestr(f"inspection_{i}.png", img)
+        st.download_button(
+            "Download images ZIP",
+            zip_buffer.getvalue(),
+            "inspections.zip"
+        )
 
-        z.writestr("results.csv", csv)
-
-    st.download_button(
-        "Download FULL report (ZIP)",
-        zip_buffer.getvalue(),
-        "inspection_report.zip"
-    )
-
-    if st.button("RESET SESSION"):
-
-        st.session_state.history = []
-        st.session_state.saved_images = []
-
-        st.success("Session cleared")
 
