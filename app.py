@@ -200,12 +200,14 @@ if img_file:
     # INDUSTRIAL DECISION LOGIC
     # ---------------------------------------------------
 
-    defect = (
-        (prob_defect > defect_th) &
-        (prob_defect > prob_solder * dominance) &
-        inspect_mask
-    )
+    metal_mask = (prob_solder > 0.25)
 
+    defect = (
+    (prob_defect > defect_th) &
+    (prob_defect > prob_solder * dominance) &
+    metal_mask &
+    inspect_mask
+    )
     solder = (
         (prob_solder >= prob_defect) &
         inspect_mask
