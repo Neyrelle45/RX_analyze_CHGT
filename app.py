@@ -242,19 +242,19 @@ if img_file:
 
     mask_overlay = cv2.addWeighted(mask_overlay, 1, green, 0.35, 0)
 
-overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
+    overlay = cv2.cvtColor(img_net, cv2.COLOR_GRAY2BGR)
 
-# 🔵 SOLDER = BLUE
-blue_layer = np.zeros_like(overlay)
-blue_layer[solder] = (255, 0, 0)   # BGR !!!
+    # 🔵 SOLDER = BLUE
+    blue_layer = np.zeros_like(overlay)
+    blue_layer[solder] = (255, 0, 0)   # BGR !!!
 
-# 🔴 DEFECT = RED
-red_layer = np.zeros_like(overlay)
-red_layer[defect] = (0, 0, 255)
+    # 🔴 DEFECT = RED
+    red_layer = np.zeros_like(overlay)
+    red_layer[defect] = (0, 0, 255)
 
-# appliquer
-overlay = cv2.addWeighted(overlay, 1.0, blue_layer, 0.45, 0)
-overlay = cv2.addWeighted(overlay, 1.0, red_layer, 0.85, 0)
+    # appliquer
+    overlay = cv2.addWeighted(overlay, 1.0, blue_layer, 0.45, 0)
+    overlay = cv2.addWeighted(overlay, 1.0, red_layer, 0.85, 0)
 
     # ---------------------------------------------------
     # DISPLAY
