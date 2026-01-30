@@ -145,14 +145,14 @@ if uploaded and model:
         tensor,
         threshold
     )
-
+    h, w = processed.shape
     largest_void_mask, largest_void_area, ai_conf = find_largest_void(
     pred_mask,
     heatmap,
     inspect_mask if inspect_mask is not None else np.ones_like(pred_mask)
     )
     
-    h, w = processed.shape
+
 
     # =====================================================
     # MASK ALIGNMENT
