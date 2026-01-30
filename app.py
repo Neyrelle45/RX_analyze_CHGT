@@ -273,8 +273,8 @@ if uploaded and model:
 
     def highlight_rows(row):
 
-    max_void = results_df["void_%"].max()
-    min_void = results_df["void_%"].min()
+        max_void = results_df["void_%"].max()
+        min_void = results_df["void_%"].min()
 
     if row["void_%"] == max_void:
         return ['background-color: #ff4b4b'] * len(row)
