@@ -57,5 +57,42 @@ def predict_mask(model, tensor, threshold=0.25):
 
     pred_mask = void_prob > threshold
 
+
+    
     return pred_mask, void_prob
 
+def find_largest_void(void_mask, heatmap, inspect_mask):
+
+    mask = (void_mask & inspect_mask).astype(np.uint8)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask,
+        connectivity=8
+    )
+
+    largest_area = 0
+    largest_label = None
+
+    H, W = mask.shape
+
+    for i in range(1, num_labels):
+
+        x, y, w, h, area = stats[i]
+
+        # rejet blobs ouverts (touchent bord)
+        if x == 0 or y == 0 or (x+w) >= W-1 or (y+h) >= H-1:
+            continue
+
+        if area > largest_area:
+            largest_area = area
+            largest_label = i
+
+    if largest_label is None:
+        return None, 0, 0
+
+    largest_mask = labels == largest_label
+
+    # confiance IA = prob moyenne
+    confidence = heatmap[largest_mask].mean()
+
+    return largest_mask, largest_area, confidence
