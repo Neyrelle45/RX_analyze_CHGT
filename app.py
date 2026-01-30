@@ -289,9 +289,26 @@ if uploaded and model:
         return [''] * len(row)
 
 
-    st.dataframe(
-    results_df.style.apply(highlight_rows, axis=1)
-    )
+    if len(st.session_state.results) > 0:
+
+        results_df = pd.DataFrame(st.session_state.results)
+
+        def highlight_rows(row):
+
+            max_void = results_df["void_%"].max()
+            min_void = results_df["void_%"].min()
+
+            if row["void_%"] == max_void:
+                return ['background-color: #ff4b4b'] * len(row)
+
+            if row["void_%"] == min_void:
+                return ['background-color: #4b8bff'] * len(row)
+
+            return [''] * len(row)
+
+        st.dataframe(
+            results_df.style.apply(highlight_rows, axis=1)
+        )
 
 
 
