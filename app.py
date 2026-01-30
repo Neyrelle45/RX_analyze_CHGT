@@ -41,37 +41,28 @@ mask_file = st.sidebar.file_uploader(
     type=["png", "jpg"]
 )
 
-
 model = None
 if model_file:
     model = load_model(model_file)
 
 
 # =====================================================
-# SIDEBAR — DETECTION
+# SIDEBAR — DETECTION (INDUSTRIAL)
 # =====================================================
 
 st.sidebar.header("Detection")
 
-threshold = st.sidebar.slider(
-    "Defect threshold",
-    0.05,
-    0.6,
-    0.25,
-    0.01
-)
-
-dominance = st.sidebar.slider(
-    "Defect vs solder dominance",
-    0.5,
-    2.0,
-    1.0,
-    0.05
+percentile = st.sidebar.slider(
+    "Defect percentile (adaptive threshold)",
+    60,
+    95,
+    82,
+    1
 )
 
 
 # =====================================================
-# SIDEBAR — MASK ALIGNMENT (FINESSE)
+# SIDEBAR — MASK ALIGNMENT
 # =====================================================
 
 st.sidebar.header("Mask alignment")
@@ -97,40 +88,40 @@ angle = st.sidebar.slider(
 
 
 # =====================================================
-# SIDEBAR — RX PREPROCESSING
+# SIDEBAR — RX PREPROCESS (SAFE DEFAULTS)
 # =====================================================
 
 st.sidebar.header("RX preprocessing")
 
 contrast = st.sidebar.slider(
     "Global contrast",
-    0.8,
-    2.2,
-    1.4,
+    0.9,
+    1.8,
+    1.35,
     0.05
 )
 
 clahe = st.sidebar.slider(
     "Local contrast (CLAHE)",
     1.0,
-    4.0,
-    2.5,
+    2.8,
+    2.2,
     0.1
 )
 
 void_boost = st.sidebar.slider(
     "Void enhancer",
     0.0,
-    4.0,
-    2.0,
+    3.0,
+    1.6,
     0.1
 )
 
 gamma = st.sidebar.slider(
     "Gamma micro-contrast",
-    0.8,
-    1.6,
-    1.15,
+    0.9,
+    1.3,
+    1.1,
     0.05
 )
 
@@ -150,7 +141,6 @@ if uploaded and model:
 
     original = np.array(Image.open(uploaded).convert("RGB"))
 
-    # PREPROCESS
     tensor, processed = preprocess_rx(
         original,
         contrast,
@@ -159,24 +149,23 @@ if uploaded and model:
         gamma
     )
 
-    # PREDICT
     pred_mask, heatmap = predict_mask(
         model,
         tensor,
-        threshold
+        percentile
     )
+
+    h, w = processed.shape
 
     # =====================================================
     # MASK ALIGNMENT
     # =====================================================
 
-    inspect_mask = None
+    inspect_mask = np.ones((h, w), dtype=bool)
 
     if mask_file:
+
         mask_img = np.array(Image.open(mask_file).convert("L"))
-
-        h, w = processed.shape
-
         mask_img = cv2.resize(mask_img, (w, h))
 
         M = cv2.getRotationMatrix2D(
@@ -195,67 +184,67 @@ if uploaded and model:
 
         inspect_mask = aligned > 127
 
-        pred_mask = pred_mask & inspect_mask
+    # appliquer zone inspection
+    pred_mask = pred_mask & inspect_mask
 
 
     # =====================================================
-    # COLORS
+    # METRICS (FIX INDUSTRIEL)
     # =====================================================
 
-    overlay = original.copy()
+    void_pixels = np.sum(pred_mask)
 
-    overlay = cv2.resize(
-        overlay,
-        (processed.shape[1], processed.shape[0])
+    solder_pixels = np.sum(
+        (~pred_mask) & inspect_mask
     )
 
-    void_pixels = pred_mask
-    solder_pixels = (~pred_mask)
+    total = void_pixels + solder_pixels
 
-    if inspect_mask is not None:
-        solder_pixels &= inspect_mask
-
-    # VOID = RED
-    overlay[void_pixels] = [255, 0, 0]
-
-    # SOLDER = YELLOW
-    overlay[solder_pixels] = [255, 255, 0]
+    manque_pct = (void_pixels / total * 100) if total > 0 else 0
 
 
     # =====================================================
-    # METRICS
+    # OVERLAY INDUSTRIEL
     # =====================================================
 
-    void_count = np.sum(void_pixels)
-    solder_count = np.sum(solder_pixels)
+    overlay = cv2.resize(original, (w, h)).copy()
 
-    denom = void_count + solder_count
+    # solder = jaune
+    overlay[(~pred_mask) & inspect_mask] = [255, 230, 0]
 
-    manque_pct = (void_count / denom * 100) if denom > 0 else 0
+    # void = rouge
+    overlay[pred_mask] = [255, 0, 0]
 
 
     # =====================================================
-    # DISPLAY
+    # DISPLAY (HEATMAP FIXED SIZE)
     # =====================================================
 
     col1, col2, col3 = st.columns(3)
 
-    col1.image(original, caption="Original")
+    col1.image(original, caption="Original", use_container_width=True)
 
-    if inspect_mask is not None:
-        mask_vis = original.copy()
-        mask_vis = cv2.resize(mask_vis, (processed.shape[1], processed.shape[0]))
-        mask_vis[inspect_mask] = [0,255,0]
+    mask_vis = original.copy()
+    mask_vis = cv2.resize(mask_vis, (w, h))
+    mask_vis[inspect_mask] = [0,255,0]
 
-        col2.image(mask_vis, caption="Mask aligned")
+    col2.image(mask_vis, caption="Mask aligned", use_container_width=True)
 
-    col3.image(overlay, caption="Detection — RED=void | YELLOW=solder")
+    col3.image(
+        overlay,
+        caption="Detection — RED=void | YELLOW=solder",
+        use_container_width=True
+    )
 
 
     if show_heatmap:
+
+        heatmap_vis = (heatmap * 255).astype(np.uint8)
+
         st.image(
-            (heatmap * 255).astype(np.uint8),
-            caption="Defect heatmap"
+            heatmap_vis,
+            caption="Defect heatmap",
+            use_container_width=True
         )
 
 
@@ -265,15 +254,15 @@ if uploaded and model:
 
     df = pd.DataFrame([{
         "manque_%": round(manque_pct,2),
-        "pixels_defaut": int(void_count),
-        "pixels_soudure": int(solder_count)
+        "pixels_defaut": int(void_pixels),
+        "pixels_soudure": int(solder_pixels)
     }])
 
     st.dataframe(df)
 
 
     # =====================================================
-    # SAVE INSPECTION
+    # SAVE
     # =====================================================
 
     if st.button("Save inspection"):
@@ -285,10 +274,6 @@ if uploaded and model:
 
         st.success("Inspection saved ✔")
 
-
-    # =====================================================
-    # EXPORT CSV
-    # =====================================================
 
     if st.session_state.results:
 
@@ -302,8 +287,6 @@ if uploaded and model:
             "inspection_results.csv"
         )
 
-
-        # ZIP images
         zip_buffer = io.BytesIO()
 
         with zipfile.ZipFile(zip_buffer, "w") as z:
@@ -315,4 +298,3 @@ if uploaded and model:
             zip_buffer.getvalue(),
             "inspections.zip"
         )
-
