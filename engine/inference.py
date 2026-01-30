@@ -50,6 +50,9 @@ def predict_mask(model, tensor, threshold):
 
         probs = torch.softmax(out, dim=1)[0,1]
 
+        # sharpening
+        probs = probs ** 0.7
+
         heatmap = probs.detach().cpu().numpy()
 
         pred_mask = heatmap > threshold
