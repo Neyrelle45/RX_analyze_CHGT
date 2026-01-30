@@ -180,7 +180,14 @@ if uploaded and model:
             cv2.COLORMAP_JET
         )
 
-        st.image(heatmap_vis, use_container_width=True)
+        display_heatmap = cv2.resize(
+            heatmap_vis,
+            (w//2, h//2),
+            interpolation=cv2.INTER_AREA
+        )
+
+        st.image(display_heatmap, use_container_width=False)
+
 
     # =====================================================
     # SAVE
