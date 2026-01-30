@@ -2,39 +2,30 @@ import torch
 import numpy as np
 import cv2
 
-from engine.model import UNet
 
-
-# =====================================================
-# LOAD MODEL — DEPLOYMENT SAFE
-# =====================================================
+# ------------------------------------------------
+# LOAD MODEL (SAFE + FAST)
+# ------------------------------------------------
 
 def load_model(model_file):
 
-    device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = UNet()   # ⚠️ doit matcher training
-
-    state_dict = torch.load(
+    model = torch.load(
         model_file,
         map_location=device
     )
 
-    model.load_state_dict(state_dict)
-
-    model.to(device)
     model.eval()
+    model.to(device)
 
     return model
 
 
-# =====================================================
-# PREDICTION
-# =====================================================
+# ------------------------------------------------
+# PREDICT
+# ------------------------------------------------
 
-@torch.no_grad()
 def predict_mask(model, tensor, threshold):
 
     device = next(model.parameters()).device
@@ -50,52 +41,38 @@ def predict_mask(model, tensor, threshold):
 
         probs = torch.softmax(out, dim=1)[0,1]
 
-        # sharpening
-        probs = probs ** 0.7
-
         heatmap = probs.detach().cpu().numpy()
+
+        # ⭐ CONTRAST BOOST (CRUCIAL)
+        p2, p98 = np.percentile(heatmap, (2, 98))
+        heatmap = np.clip((heatmap - p2) / (p98 - p2 + 1e-6), 0, 1)
 
         pred_mask = heatmap > threshold
 
     return pred_mask, heatmap
 
 
+# ------------------------------------------------
+# LARGEST VOID
+# ------------------------------------------------
 
-    
-    return pred_mask, void_prob
+def find_largest_void(pred_mask, heatmap, inspect_mask):
 
-def find_largest_void(void_mask, heatmap, inspect_mask):
+    mask = pred_mask & inspect_mask
 
-    mask = (void_mask & inspect_mask).astype(np.uint8)
+    mask = mask.astype(np.uint8)
 
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        mask,
-        connectivity=8
-    )
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
 
-    largest_area = 0
-    largest_label = None
-
-    H, W = mask.shape
-
-    for i in range(1, num_labels):
-
-        x, y, w, h, area = stats[i]
-
-        # rejet blobs ouverts (touchent bord)
-        if x == 0 or y == 0 or (x+w) >= W-1 or (y+h) >= H-1:
-            continue
-
-        if area > largest_area:
-            largest_area = area
-            largest_label = i
-
-    if largest_label is None:
+    if n <= 1:
         return None, 0, 0
 
-    largest_mask = labels == largest_label
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    idx = np.argmax(areas) + 1
 
-    # confiance IA = prob moyenne
-    confidence = heatmap[largest_mask].mean()
+    largest = labels == idx
+    area = areas[idx-1]
 
-    return largest_mask, largest_area, confidence
+    confidence = float(heatmap[largest].mean())
+
+    return largest, area, confidence
