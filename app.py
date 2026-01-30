@@ -7,7 +7,7 @@ import io
 from PIL import Image
 
 from engine.preprocessing import preprocess_rx
-from engine.inference import load_model, predict_mask
+from engine.inference import load_model, predict_mask, find_largest_void
 
 
 st.set_page_config(layout="wide")
@@ -146,6 +146,12 @@ if uploaded and model:
         threshold
     )
 
+    largest_void_mask, largest_void_area, ai_conf = find_largest_void(
+    pred_mask,
+    heatmap,
+    inspect_mask if inspect_mask is not None else np.ones_like(pred_mask)
+    )
+    
     h, w = processed.shape
 
     # =====================================================
@@ -189,6 +195,21 @@ if uploaded and model:
     overlay[void_pixels] = [255, 0, 0]     # VOID = RED
     overlay[solder_pixels] = [255, 255, 0] # SOLDER = YELLOW
 
+    if largest_void_mask is not None:
+
+    coords = np.column_stack(np.where(largest_void_mask))
+
+    y, x = coords.mean(axis=0).astype(int)
+
+    radius = int(np.sqrt(largest_void_area / np.pi))
+
+    cv2.circle(
+        overlay,
+        (x, y),
+        radius,
+        (255,255,0),  # bleu ciel
+        4            # trait épais
+    )
 
     # =====================================================
     # METRICS
@@ -242,12 +263,32 @@ if uploaded and model:
     # =====================================================
 
     df = pd.DataFrame([{
-        "void_%": round(manque_pct, 2),
-        "void_pixels": int(void_count),
-        "solder_pixels": int(solder_count)
+    "void_%": round(manque_pct, 2),
+    "largest_void_px": int(largest_void_area),
+    "IA_confidence_%": round(ai_conf * 100, 1),
+    "void_pixels": int(void_count),
+    "solder_pixels": int(solder_count)
     }])
 
-    st.dataframe(df)
+
+    def highlight_rows(row):
+
+    max_void = results_df["void_%"].max()
+    min_void = results_df["void_%"].min()
+
+    if row["void_%"] == max_void:
+        return ['background-color: #ff4b4b'] * len(row)
+
+    if row["void_%"] == min_void:
+        return ['background-color: #4b8bff'] * len(row)
+
+    return [''] * len(row)
+
+
+    st.dataframe(
+    results_df.style.apply(highlight_rows, axis=1)
+    )
+
 
 
     # =====================================================
