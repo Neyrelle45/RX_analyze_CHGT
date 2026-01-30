@@ -197,19 +197,19 @@ if uploaded and model:
 
     if largest_void_mask is not None:
 
-    coords = np.column_stack(np.where(largest_void_mask))
+        coords = np.column_stack(np.where(largest_void_mask))
 
-    y, x = coords.mean(axis=0).astype(int)
+        y, x = coords.mean(axis=0).astype(int)
 
-    radius = int(np.sqrt(largest_void_area / np.pi))
+        radius = int(np.sqrt(largest_void_area / np.pi))
 
-    cv2.circle(
-        overlay,
-        (x, y),
-        radius,
-        (255,255,0),  # bleu ciel
-        4            # trait épais
-    )
+        cv2.circle(
+            overlay,
+            (x, y),
+            radius,
+            (255,255,0),  # bleu ciel
+            4            # trait épais
+       )
 
     # =====================================================
     # METRICS
