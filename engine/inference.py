@@ -1,38 +1,11 @@
 import torch
 import numpy as np
 import cv2
-import inspect
 
 
 # =====================================================
-# SAFE MODEL LOADER — INDUSTRIAL
+# LOAD MODEL — DO NOT REBUILD
 # =====================================================
-
-def build_unet():
-
-    from engine.model import UNet
-
-    sig = inspect.signature(UNet.__init__)
-    params = sig.parameters
-
-    # On adapte automatiquement selon ton UNet
-
-    if "n_classes" in params:
-        return UNet(n_classes=3)
-
-    elif "num_classes" in params:
-        return UNet(num_classes=3)
-
-    elif "out_channels" in params:
-        return UNet(out_channels=3)
-
-    elif "classes" in params:
-        return UNet(classes=3)
-
-    else:
-        # fallback ultra-safe
-        return UNet(3)
-
 
 def load_model(model_file):
 
@@ -40,38 +13,18 @@ def load_model(model_file):
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    checkpoint = torch.load(
+    # ⭐ CRITIQUE : on charge tel quel
+    model = torch.load(
         model_file,
         map_location=device
     )
 
-    # -------------------------------------------------
-    # CASE 1 — modèle complet sauvegardé
-    # -------------------------------------------------
-
-    if hasattr(checkpoint, "eval"):
-        model = checkpoint
-
-    # -------------------------------------------------
-    # CASE 2 — checkpoint dict
-    # -------------------------------------------------
-
-    else:
-
-        model = build_unet()
-
-        if isinstance(checkpoint, dict):
-
-            if "state_dict" in checkpoint:
-                model.load_state_dict(checkpoint["state_dict"])
-
-            else:
-                model.load_state_dict(checkpoint)
-
-        else:
-            raise RuntimeError(
-                "Unsupported model format."
-            )
+    # sécurité minimale
+    if not hasattr(model, "eval"):
+        raise RuntimeError(
+            "The .pth file does not contain a full model. "
+            "Please export with torch.save(model)."
+        )
 
     model.to(device)
     model.eval()
@@ -80,7 +33,7 @@ def load_model(model_file):
 
 
 # =====================================================
-# PREDICTION — HIGH CONTRAST HEATMAP
+# PREDICT — HIGH DYNAMIC HEATMAP
 # =====================================================
 
 @torch.no_grad()
@@ -93,11 +46,22 @@ def predict_mask(model, tensor, threshold=0.25):
 
     probs = torch.softmax(output, dim=1)[0]
 
-    void_prob = probs[1].cpu().numpy()
+    # ⚠️ IMPORTANT
+    # Sur 99% des datasets void :
+    # classe 0 = background
+    # classe 1 = solder
+    # classe 2 = void
 
-    # ⭐ NORMALISATION CRITIQUE
-    p2, p98 = np.percentile(void_prob, (2, 98))
-    void_prob = np.clip((void_prob - p2) / (p98 - p2 + 1e-6), 0, 1)
+    void_prob = probs[-1].cpu().numpy()
+
+    # ⭐ NORMALISATION PERCENTILE
+    p1, p99 = np.percentile(void_prob, (1, 99))
+
+    void_prob = np.clip(
+        (void_prob - p1) / (p99 - p1 + 1e-6),
+        0,
+        1
+    )
 
     pred_mask = void_prob > threshold
 
