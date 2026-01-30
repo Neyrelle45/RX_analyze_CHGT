@@ -2,9 +2,11 @@ import torch
 import numpy as np
 import cv2
 
+from engine.model import UNet
+
 
 # =====================================================
-# LOAD MODEL — DO NOT REBUILD
+# LOAD MODEL — DEPLOYMENT SAFE
 # =====================================================
 
 def load_model(model_file):
@@ -13,18 +15,14 @@ def load_model(model_file):
         "cuda" if torch.cuda.is_available() else "cpu"
     )
 
-    # ⭐ CRITIQUE : on charge tel quel
-    model = torch.load(
+    model = UNet()   # ⚠️ doit matcher training
+
+    state_dict = torch.load(
         model_file,
         map_location=device
     )
 
-    # sécurité minimale
-    if not hasattr(model, "eval"):
-        raise RuntimeError(
-            "The .pth file does not contain a full model. "
-            "Please export with torch.save(model)."
-        )
+    model.load_state_dict(state_dict)
 
     model.to(device)
     model.eval()
@@ -33,7 +31,7 @@ def load_model(model_file):
 
 
 # =====================================================
-# PREDICT — HIGH DYNAMIC HEATMAP
+# PREDICTION
 # =====================================================
 
 @torch.no_grad()
@@ -46,19 +44,13 @@ def predict_mask(model, tensor, threshold=0.25):
 
     probs = torch.softmax(output, dim=1)[0]
 
-    # ⚠️ IMPORTANT
-    # Sur 99% des datasets void :
-    # classe 0 = background
-    # classe 1 = solder
-    # classe 2 = void
-
     void_prob = probs[-1].cpu().numpy()
 
-    # ⭐ NORMALISATION PERCENTILE
-    p1, p99 = np.percentile(void_prob, (1, 99))
+    # ⭐ normalisation robuste
+    p2, p98 = np.percentile(void_prob, (2, 98))
 
     void_prob = np.clip(
-        (void_prob - p1) / (p99 - p1 + 1e-6),
+        (void_prob - p2) / (p98 - p2 + 1e-6),
         0,
         1
     )
