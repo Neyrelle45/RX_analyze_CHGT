@@ -146,6 +146,10 @@ if uploaded and model:
         threshold
     )
     h, w = processed.shape
+
+    # masque inspection par défaut = toute l'image
+    inspect_mask = np.ones((h, w), dtype=bool)
+    
     largest_void_mask, largest_void_area, ai_conf = find_largest_void(
     pred_mask,
     heatmap,
@@ -158,7 +162,7 @@ if uploaded and model:
     # MASK ALIGNMENT
     # =====================================================
 
-    inspect_mask = None
+    
 
     if mask_file:
 
