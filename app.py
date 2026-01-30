@@ -8,7 +8,7 @@ from PIL import Image
 
 from engine.preprocessing import preprocess_rx
 from engine.inference import load_model, predict_mask
-
+from engine.void_engine import analyze_voids
 
 st.set_page_config(layout="wide")
 st.title("RX Void Analyzer — Industrial Edition")
@@ -185,17 +185,20 @@ if uploaded and model:
         inspect_mask = aligned > 127
 
     # appliquer zone inspection
-    pred_mask = pred_mask & inspect_mask
+    pred_mask, void_stats = analyze_voids(
+    pred_mask,
+    inspect_mask
+    )
 
 
     # =====================================================
     # METRICS (FIX INDUSTRIEL)
     # =====================================================
 
-    void_pixels = np.sum(pred_mask)
+    void_pixels = void_stats["void_pixels"]
 
     solder_pixels = np.sum(
-        (~pred_mask) & inspect_mask
+    (~pred_mask) & inspect_mask
     )
 
     total = void_pixels + solder_pixels
@@ -253,7 +256,8 @@ if uploaded and model:
     # =====================================================
 
     df = pd.DataFrame([{
-        "manque_%": round(manque_pct,2),
+        "manque_%": round(manque_pct,2),"largest_void_pixels": void_stats["largest_void_pixels"],
+        "void_count": void_stats["void_count"],
         "pixels_defaut": int(void_pixels),
         "pixels_soudure": int(solder_pixels)
     }])
