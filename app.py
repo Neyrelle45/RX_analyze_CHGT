@@ -276,13 +276,13 @@ if uploaded and model:
         max_void = results_df["void_%"].max()
         min_void = results_df["void_%"].min()
 
-    if row["void_%"] == max_void:
-        return ['background-color: #ff4b4b'] * len(row)
+        if row["void_%"] == max_void:
+            return ['background-color: #ff4b4b'] * len(row)
 
-    if row["void_%"] == min_void:
-        return ['background-color: #4b8bff'] * len(row)
+        if row["void_%"] == min_void:
+            return ['background-color: #4b8bff'] * len(row)
 
-    return [''] * len(row)
+        return [''] * len(row)
 
 
     st.dataframe(
