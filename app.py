@@ -211,7 +211,7 @@ if uploaded and model:
             overlay,
             (x, y),
             radius,
-            (255,255,0),  # bleu ciel
+            (135,206,235),  # bleu ciel
             4            # trait épais
        )
 
