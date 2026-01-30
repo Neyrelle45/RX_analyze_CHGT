@@ -1,38 +1,77 @@
 import torch
 import numpy as np
 import cv2
+import inspect
 
 
 # =====================================================
-# LOAD MODEL — ULTRA ROBUST
+# SAFE MODEL LOADER — INDUSTRIAL
 # =====================================================
+
+def build_unet():
+
+    from engine.model import UNet
+
+    sig = inspect.signature(UNet.__init__)
+    params = sig.parameters
+
+    # On adapte automatiquement selon ton UNet
+
+    if "n_classes" in params:
+        return UNet(n_classes=3)
+
+    elif "num_classes" in params:
+        return UNet(num_classes=3)
+
+    elif "out_channels" in params:
+        return UNet(out_channels=3)
+
+    elif "classes" in params:
+        return UNet(classes=3)
+
+    else:
+        # fallback ultra-safe
+        return UNet(3)
+
 
 def load_model(model_file):
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
-    # charge checkpoint proprement
     checkpoint = torch.load(
         model_file,
         map_location=device
     )
 
-    # cas 1 — modèle complet sauvegardé
+    # -------------------------------------------------
+    # CASE 1 — modèle complet sauvegardé
+    # -------------------------------------------------
+
     if hasattr(checkpoint, "eval"):
         model = checkpoint
 
-    # cas 2 — state_dict uniquement
-    elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-
-        from engine.model import UNet
-
-        model = UNet(n_classes=3)
-        model.load_state_dict(checkpoint["state_dict"])
+    # -------------------------------------------------
+    # CASE 2 — checkpoint dict
+    # -------------------------------------------------
 
     else:
-        from engine.model import UNet
-        model = UNet(n_classes=3)
-        model.load_state_dict(checkpoint)
+
+        model = build_unet()
+
+        if isinstance(checkpoint, dict):
+
+            if "state_dict" in checkpoint:
+                model.load_state_dict(checkpoint["state_dict"])
+
+            else:
+                model.load_state_dict(checkpoint)
+
+        else:
+            raise RuntimeError(
+                "Unsupported model format."
+            )
 
     model.to(device)
     model.eval()
@@ -41,7 +80,7 @@ def load_model(model_file):
 
 
 # =====================================================
-# PREDICTION — HEATMAP PROPRE
+# PREDICTION — HIGH CONTRAST HEATMAP
 # =====================================================
 
 @torch.no_grad()
@@ -52,20 +91,13 @@ def predict_mask(model, tensor, threshold=0.25):
 
     output = model(tensor)
 
-    # shape : [1, C, H, W]
     probs = torch.softmax(output, dim=1)[0]
 
-    # classe 1 = void
     void_prob = probs[1].cpu().numpy()
 
-    # NORMALISATION CRITIQUE
-    void_prob = cv2.normalize(
-        void_prob,
-        None,
-        0,
-        1,
-        cv2.NORM_MINMAX
-    )
+    # ⭐ NORMALISATION CRITIQUE
+    p2, p98 = np.percentile(void_prob, (2, 98))
+    void_prob = np.clip((void_prob - p2) / (p98 - p2 + 1e-6), 0, 1)
 
     pred_mask = void_prob > threshold
 
