@@ -35,27 +35,27 @@ def load_model(model_file):
 # =====================================================
 
 @torch.no_grad()
-def predict_mask(model, tensor, threshold=0.25):
+def predict_mask(model, tensor, threshold):
 
     device = next(model.parameters()).device
     tensor = tensor.to(device)
 
-    output = model(tensor)
+    with torch.inference_mode():
 
-    probs = torch.softmax(output, dim=1)[0]
+        if device.type == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                out = model(tensor)
+        else:
+            out = model(tensor)
 
-    void_prob = probs[-1].cpu().numpy()
+        probs = torch.softmax(out, dim=1)[0,1]
 
-    # ⭐ normalisation robuste
-    p2, p98 = np.percentile(void_prob, (2, 98))
+        heatmap = probs.detach().cpu().numpy()
 
-    void_prob = np.clip(
-        (void_prob - p2) / (p98 - p2 + 1e-6),
-        0,
-        1
-    )
+        pred_mask = heatmap > threshold
 
-    pred_mask = void_prob > threshold
+    return pred_mask, heatmap
+
 
 
     
