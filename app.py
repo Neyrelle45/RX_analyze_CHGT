@@ -26,96 +26,36 @@ if "saved_images" not in st.session_state:
 
 
 # =====================================================
-# SIDEBAR — MODEL
+# SIDEBAR
 # =====================================================
 
 st.sidebar.header("Model")
 
-model_file = st.sidebar.file_uploader(
-    "Load model (.pth)",
-    type=["pth"]
-)
+model_file = st.sidebar.file_uploader("Load model (.pth)", type=["pth"])
+mask_file = st.sidebar.file_uploader("Load inspection mask", type=["png", "jpg"])
 
-mask_file = st.sidebar.file_uploader(
-    "Load inspection mask",
-    type=["png", "jpg"]
-)
+model = load_model(model_file) if model_file else None
 
-model = None
-if model_file:
-    model = load_model(model_file)
-
-
-# =====================================================
-# DETECTION
-# =====================================================
 
 st.sidebar.header("Detection")
 
-threshold = st.sidebar.slider(
-    "Void threshold",
-    0.05,
-    0.6,
-    0.25,
-    0.01
-)
+threshold = st.sidebar.slider("Void threshold", 0.05, 0.6, 0.25, 0.01)
 
-
-# =====================================================
-# MASK ALIGNMENT — PRECISION MODE
-# =====================================================
 
 st.sidebar.header("Mask alignment")
 
 tx = st.sidebar.slider("Translate X", -80, 80, 0, 1)
 ty = st.sidebar.slider("Translate Y", -80, 80, 0, 1)
 
-scale = st.sidebar.slider(
-    "Scale",
-    0.95,
-    1.05,
-    1.0,
-    0.001
-)
+scale = st.sidebar.slider("Scale", 0.95, 1.05, 1.0, 0.001)
+angle = st.sidebar.slider("Rotation", -3.0, 3.0, 0.0, 0.1)
 
-angle = st.sidebar.slider(
-    "Rotation",
-    -3.0,
-    3.0,
-    0.0,
-    0.1
-)
-
-
-# =====================================================
-# RX PREPROCESS — DEFAULTS TUNED
-# =====================================================
 
 st.sidebar.header("RX preprocessing")
 
-contrast = st.sidebar.slider(
-    "Global contrast",
-    1.0,
-    2.2,
-    1.6,
-    0.05
-)
-
-clahe = st.sidebar.slider(
-    "Local contrast",
-    1.0,
-    4.0,
-    2.2,
-    0.1
-)
-
-gamma = st.sidebar.slider(
-    "Gamma",
-    0.8,
-    1.6,
-    1.1,
-    0.05
-)
+contrast = st.sidebar.slider("Global contrast", 1.0, 2.2, 1.6, 0.05)
+clahe = st.sidebar.slider("Local contrast", 1.0, 4.0, 2.2, 0.1)
+gamma = st.sidebar.slider("Gamma", 0.8, 1.6, 1.1, 0.05)
 
 show_heatmap = st.sidebar.checkbox("Show defect heatmap", True)
 
@@ -124,96 +64,76 @@ show_heatmap = st.sidebar.checkbox("Show defect heatmap", True)
 # IMAGE INPUT
 # =====================================================
 
-uploaded = st.file_uploader(
-    "RX image",
-    type=["png", "jpg", "jpeg"]
-)
+uploaded = st.file_uploader("RX image", type=["png", "jpg", "jpeg"])
+
 
 if uploaded and model:
 
     original = np.array(Image.open(uploaded).convert("RGB"))
 
-    tensor, processed = preprocess_rx(
-        original,
-        contrast,
-        clahe,
-        gamma
-    )
+    tensor, processed = preprocess_rx(original, contrast, clahe, gamma)
+    pred_mask, heatmap = predict_mask(model, tensor, threshold)
 
-    pred_mask, heatmap = predict_mask(
-        model,
-        tensor,
-        threshold
-    )
     h, w = processed.shape
 
-    # masque inspection par défaut = toute l'image
+    # masque inspection par défaut
     inspect_mask = np.ones((h, w), dtype=bool)
-    
-    largest_void_mask, largest_void_area, ai_conf = find_largest_void(
-    pred_mask,
-    heatmap,
-    inspect_mask if inspect_mask is not None else np.ones_like(pred_mask)
-    )
-    
-
 
     # =====================================================
     # MASK ALIGNMENT
     # =====================================================
-
-    
 
     if mask_file:
 
         mask_img = np.array(Image.open(mask_file).convert("L"))
         mask_img = cv2.resize(mask_img, (w, h))
 
-        M = cv2.getRotationMatrix2D(
-            (w//2, h//2),
-            angle,
-            scale
-        )
-
+        M = cv2.getRotationMatrix2D((w//2, h//2), angle, scale)
         M[:, 2] += [tx, ty]
 
         aligned = cv2.warpAffine(mask_img, M, (w, h))
-
         inspect_mask = aligned > 127
 
-        pred_mask = pred_mask & inspect_mask
-
+        pred_mask &= inspect_mask
 
     # =====================================================
-    # OVERLAY — INDUSTRIAL COLORS
+    # LARGEST VOID (APRES MASK !!)
     # =====================================================
 
-    overlay = cv2.resize(original, (w, h))
+    largest_void_mask, largest_void_area, ai_conf = find_largest_void(
+        pred_mask,
+        heatmap,
+        inspect_mask
+    )
+
+    # =====================================================
+    # OVERLAY (BGR SAFE)
+    # =====================================================
+
+    overlay = cv2.cvtColor(cv2.resize(original, (w, h)), cv2.COLOR_RGB2BGR)
 
     void_pixels = pred_mask
-    solder_pixels = (~pred_mask)
+    solder_pixels = (~pred_mask) & inspect_mask
 
-    if inspect_mask is not None:
-        solder_pixels &= inspect_mask
+    overlay[void_pixels] = (0, 0, 255)       # rouge BGR
+    overlay[solder_pixels] = (0, 255, 255)   # jaune BGR
 
-    overlay[void_pixels] = [255, 0, 0]     # VOID = RED
-    overlay[solder_pixels] = [255, 255, 0] # SOLDER = YELLOW
-
+    # cercle largest void
     if largest_void_mask is not None:
 
         coords = np.column_stack(np.where(largest_void_mask))
-
         y, x = coords.mean(axis=0).astype(int)
-
         radius = int(np.sqrt(largest_void_area / np.pi))
 
         cv2.circle(
             overlay,
             (x, y),
             radius,
-            (135,206,235),  # bleu ciel
-            4            # trait épais
-       )
+            (255, 255, 0),   # bleu ciel BGR
+            4
+        )
+
+    overlay = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
 
     # =====================================================
     # METRICS
@@ -225,92 +145,38 @@ if uploaded and model:
     denom = void_count + solder_count
     manque_pct = (void_count / denom * 100) if denom > 0 else 0
 
+    df = {
+        "void_%": round(manque_pct, 2),
+        "largest_void_px": int(largest_void_area),
+        "IA_confidence_%": round(ai_conf * 100, 1),
+        "void_pixels": int(void_count),
+        "solder_pixels": int(solder_count)
+    }
 
     # =====================================================
-    # DISPLAY — PERFECTLY SIZED
+    # DISPLAY
     # =====================================================
 
     col1, col2, col3 = st.columns(3)
 
     col1.image(original, caption="Original", use_container_width=True)
 
-    if inspect_mask is not None:
-        mask_vis = cv2.resize(original, (w, h))
-        mask_vis[inspect_mask] = [0,255,0]
-        col2.image(mask_vis, caption="Mask aligned", use_container_width=True)
+    mask_vis = original.copy()
+    mask_vis = cv2.resize(mask_vis, (w, h))
+    mask_vis[inspect_mask] = [0,255,0]
 
-    col3.image(
-        overlay,
-        caption="Detection — RED=void | YELLOW=solder",
-        use_container_width=True
-    )
+    col2.image(mask_vis, caption="Mask aligned", use_container_width=True)
 
+    col3.image(overlay, caption="Detection", use_container_width=True)
 
-    # ⭐ HEATMAP — SAME SIZE
     if show_heatmap:
 
-        heatmap_vis = (heatmap * 255).astype(np.uint8)
         heatmap_vis = cv2.applyColorMap(
-            heatmap_vis,
+            (heatmap * 255).astype(np.uint8),
             cv2.COLORMAP_JET
         )
 
-        st.image(
-            heatmap_vis,
-            caption="Void probability heatmap",
-            use_container_width=True
-        )
-
-
-    # =====================================================
-    # TABLE
-    # =====================================================
-
-    df = pd.DataFrame([{
-    "void_%": round(manque_pct, 2),
-    "largest_void_px": int(largest_void_area),
-    "IA_confidence_%": round(ai_conf * 100, 1),
-    "void_pixels": int(void_count),
-    "solder_pixels": int(solder_count)
-    }])
-
-
-    def highlight_rows(row):
-
-        max_void = results_df["void_%"].max()
-        min_void = results_df["void_%"].min()
-
-        if row["void_%"] == max_void:
-            return ['background-color: #ff4b4b'] * len(row)
-
-        if row["void_%"] == min_void:
-            return ['background-color: #4b8bff'] * len(row)
-
-        return [''] * len(row)
-
-
-    if len(st.session_state.results) > 0:
-
-        results_df = pd.DataFrame(st.session_state.results)
-
-        def highlight_rows(row):
-
-            max_void = results_df["void_%"].max()
-            min_void = results_df["void_%"].min()
-
-            if row["void_%"] == max_void:
-                return ['background-color: #ff4b4b'] * len(row)
-
-            if row["void_%"] == min_void:
-                return ['background-color: #4b8bff'] * len(row)
-
-            return [''] * len(row)
-
-        st.dataframe(
-            results_df.style.apply(highlight_rows, axis=1)
-        )
-
-
+        st.image(heatmap_vis, use_container_width=True)
 
     # =====================================================
     # SAVE
@@ -318,34 +184,52 @@ if uploaded and model:
 
     if st.button("Save inspection"):
 
-        st.session_state.results.append(df.iloc[0])
+        st.session_state.results.append(df)
 
-        _, buffer = cv2.imencode(".png", overlay)
+        _, buffer = cv2.imencode(".png", cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
         st.session_state.saved_images.append(buffer.tobytes())
 
         st.success("Inspection saved ✔")
 
 
-    if st.session_state.results:
+# =====================================================
+# HISTORY (TOUJOURS EN BAS)
+# =====================================================
 
-        results_df = pd.DataFrame(st.session_state.results)
+st.divider()
+st.subheader("Inspection History")
 
-        csv = results_df.to_csv(index=False).encode()
+if len(st.session_state.results) == 0:
 
-        st.download_button(
-            "Download CSV",
-            csv,
-            "inspection_results.csv"
-        )
+    st.info("No inspection saved yet.")
 
-        zip_buffer = io.BytesIO()
+else:
 
-        with zipfile.ZipFile(zip_buffer, "w") as z:
-            for i, img in enumerate(st.session_state.saved_images):
-                z.writestr(f"inspection_{i}.png", img)
+    results_df = pd.DataFrame(st.session_state.results)
 
-        st.download_button(
-            "Download images ZIP",
-            zip_buffer.getvalue(),
-            "inspections.zip"
-        )
+    def highlight_rows(row):
+
+        if row["void_%"] == results_df["void_%"].max():
+            return ['background-color: #ff4b4b'] * len(row)
+
+        if row["void_%"] == results_df["void_%"].min():
+            return ['background-color: #4b8bff'] * len(row)
+
+        return [''] * len(row)
+
+    st.dataframe(
+        results_df.style.apply(highlight_rows, axis=1),
+        use_container_width=True
+    )
+
+    csv = results_df.to_csv(index=False).encode()
+
+    st.download_button("Download CSV", csv, "inspection_results.csv")
+
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, "w") as z:
+        for i, img in enumerate(st.session_state.saved_images):
+            z.writestr(f"inspection_{i}.png", img)
+
+    st.download_button("Download images ZIP", zip_buffer.getvalue(), "inspections.zip")
