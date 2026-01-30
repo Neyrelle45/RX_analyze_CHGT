@@ -8,7 +8,7 @@ from PIL import Image
 
 from engine.preprocessing import preprocess_rx
 from engine.inference import load_model, predict_mask
-from engine.void_engine import analyze_voids
+
 
 st.set_page_config(layout="wide")
 st.title("RX Void Analyzer — Industrial Edition")
@@ -47,85 +47,77 @@ if model_file:
 
 
 # =====================================================
-# SIDEBAR — DETECTION (INDUSTRIAL)
+# DETECTION
 # =====================================================
 
 st.sidebar.header("Detection")
 
-percentile = st.sidebar.slider(
-    "Defect percentile (adaptive threshold)",
-    60,
-    95,
-    82,
-    1
+threshold = st.sidebar.slider(
+    "Void threshold",
+    0.05,
+    0.6,
+    0.25,
+    0.01
 )
 
 
 # =====================================================
-# SIDEBAR — MASK ALIGNMENT
+# MASK ALIGNMENT — PRECISION MODE
 # =====================================================
 
 st.sidebar.header("Mask alignment")
 
-tx = st.sidebar.slider("Translate X", -10, 10, 0, 1)
-ty = st.sidebar.slider("Translate Y", -10, 10, 0, 1)
+tx = st.sidebar.slider("Translate X", -80, 80, 0, 1)
+ty = st.sidebar.slider("Translate Y", -80, 80, 0, 1)
 
 scale = st.sidebar.slider(
     "Scale",
-    0.97,
-    1.03,
+    0.95,
+    1.05,
     1.0,
-    0.002
+    0.001
 )
 
 angle = st.sidebar.slider(
     "Rotation",
-    -2.0,
-    2.0,
+    -3.0,
+    3.0,
     0.0,
     0.1
 )
 
 
 # =====================================================
-# SIDEBAR — RX PREPROCESS (SAFE DEFAULTS)
+# RX PREPROCESS — DEFAULTS TUNED
 # =====================================================
 
 st.sidebar.header("RX preprocessing")
 
 contrast = st.sidebar.slider(
     "Global contrast",
-    0.9,
-    1.8,
-    1.35,
+    1.0,
+    2.2,
+    1.6,
     0.05
 )
 
 clahe = st.sidebar.slider(
-    "Local contrast (CLAHE)",
+    "Local contrast",
     1.0,
-    2.8,
+    4.0,
     2.2,
     0.1
 )
 
-void_boost = st.sidebar.slider(
-    "Void enhancer",
-    0.0,
-    3.0,
-    1.6,
-    0.1
-)
-
 gamma = st.sidebar.slider(
-    "Gamma micro-contrast",
-    0.9,
-    1.3,
+    "Gamma",
+    0.8,
+    1.6,
     1.1,
     0.05
 )
 
-show_heatmap = st.sidebar.checkbox("Show defect heatmap", value=True)
+show_heatmap = st.sidebar.checkbox("Show defect heatmap", True)
 
 
 # =====================================================
@@ -145,14 +137,13 @@ if uploaded and model:
         original,
         contrast,
         clahe,
-        void_boost,
         gamma
     )
 
     pred_mask, heatmap = predict_mask(
         model,
         tensor,
-        percentile
+        threshold
     )
 
     h, w = processed.shape
@@ -161,7 +152,7 @@ if uploaded and model:
     # MASK ALIGNMENT
     # =====================================================
 
-    inspect_mask = np.ones((h, w), dtype=bool)
+    inspect_mask = None
 
     if mask_file:
 
@@ -176,62 +167,52 @@ if uploaded and model:
 
         M[:, 2] += [tx, ty]
 
-        aligned = cv2.warpAffine(
-            mask_img,
-            M,
-            (w, h)
-        )
+        aligned = cv2.warpAffine(mask_img, M, (w, h))
 
         inspect_mask = aligned > 127
 
-    # appliquer zone inspection
-    pred_mask, void_stats = analyze_voids(
-    pred_mask,
-    inspect_mask
-    )
+        pred_mask = pred_mask & inspect_mask
 
 
     # =====================================================
-    # METRICS (FIX INDUSTRIEL)
+    # OVERLAY — INDUSTRIAL COLORS
     # =====================================================
 
-    void_pixels = void_stats["void_pixels"]
+    overlay = cv2.resize(original, (w, h))
 
-    solder_pixels = np.sum(
-    (~pred_mask) & inspect_mask
-    )
+    void_pixels = pred_mask
+    solder_pixels = (~pred_mask)
 
-    total = void_pixels + solder_pixels
+    if inspect_mask is not None:
+        solder_pixels &= inspect_mask
 
-    manque_pct = (void_pixels / total * 100) if total > 0 else 0
-
-
-    # =====================================================
-    # OVERLAY INDUSTRIEL
-    # =====================================================
-
-    overlay = cv2.resize(original, (w, h)).copy()
-
-    # solder = jaune
-    overlay[(~pred_mask) & inspect_mask] = [255, 230, 0]
-
-    # void = rouge
-    overlay[pred_mask] = [255, 0, 0]
+    overlay[void_pixels] = [255, 0, 0]     # VOID = RED
+    overlay[solder_pixels] = [255, 255, 0] # SOLDER = YELLOW
 
 
     # =====================================================
-    # DISPLAY (HEATMAP FIXED SIZE)
+    # METRICS
+    # =====================================================
+
+    void_count = np.sum(void_pixels)
+    solder_count = np.sum(solder_pixels)
+
+    denom = void_count + solder_count
+    manque_pct = (void_count / denom * 100) if denom > 0 else 0
+
+
+    # =====================================================
+    # DISPLAY — PERFECTLY SIZED
     # =====================================================
 
     col1, col2, col3 = st.columns(3)
 
     col1.image(original, caption="Original", use_container_width=True)
 
-    mask_vis = original.copy()
-    mask_vis = cv2.resize(mask_vis, (w, h))
-    mask_vis[inspect_mask] = [0,255,0]
-
-    col2.image(mask_vis, caption="Mask aligned", use_container_width=True)
+    if inspect_mask is not None:
+        mask_vis = cv2.resize(original, (w, h))
+        mask_vis[inspect_mask] = [0,255,0]
+        col2.image(mask_vis, caption="Mask aligned", use_container_width=True)
 
     col3.image(
         overlay,
@@ -240,13 +221,18 @@ if uploaded and model:
     )
 
 
+    # ⭐ HEATMAP — SAME SIZE
     if show_heatmap:
 
         heatmap_vis = (heatmap * 255).astype(np.uint8)
+        heatmap_vis = cv2.applyColorMap(
+            heatmap_vis,
+            cv2.COLORMAP_JET
+        )
 
         st.image(
             heatmap_vis,
-            caption="Defect heatmap",
+            caption="Void probability heatmap",
             use_container_width=True
         )
 
@@ -256,10 +242,9 @@ if uploaded and model:
     # =====================================================
 
     df = pd.DataFrame([{
-        "manque_%": round(manque_pct,2),"largest_void_pixels": void_stats["largest_void_pixels"],
-        "void_count": void_stats["void_count"],
-        "pixels_defaut": int(void_pixels),
-        "pixels_soudure": int(solder_pixels)
+        "void_%": round(manque_pct, 2),
+        "void_pixels": int(void_count),
+        "solder_pixels": int(solder_count)
     }])
 
     st.dataframe(df)
