@@ -2,39 +2,72 @@ import torch
 import numpy as np
 import cv2
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# =====================================================
+# LOAD MODEL — ULTRA ROBUST
+# =====================================================
 
 def load_model(model_file):
 
-    model = torch.load(model_file, map_location=DEVICE)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if hasattr(model, "eval"):
-        model.eval()
-        model.to(DEVICE)
-        return model
+    # charge checkpoint proprement
+    checkpoint = torch.load(
+        model_file,
+        map_location=device
+    )
 
-    raise RuntimeError("Invalid model format")
+    # cas 1 — modèle complet sauvegardé
+    if hasattr(checkpoint, "eval"):
+        model = checkpoint
 
+    # cas 2 — state_dict uniquement
+    elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+
+        from engine.model import UNet
+
+        model = UNet(n_classes=3)
+        model.load_state_dict(checkpoint["state_dict"])
+
+    else:
+        from engine.model import UNet
+        model = UNet(n_classes=3)
+        model.load_state_dict(checkpoint)
+
+    model.to(device)
+    model.eval()
+
+    return model
+
+
+# =====================================================
+# PREDICTION — HEATMAP PROPRE
+# =====================================================
 
 @torch.no_grad()
-def predict_mask(model, tensor, percentile=82):
+def predict_mask(model, tensor, threshold=0.25):
 
-    tensor = tensor.to(DEVICE)
+    device = next(model.parameters()).device
+    tensor = tensor.to(device)
 
-    logits = model(tensor)
+    output = model(tensor)
 
-    probs = torch.softmax(logits, dim=1)[0]
+    # shape : [1, C, H, W]
+    probs = torch.softmax(output, dim=1)[0]
 
-    # assume last channel = defect
-    defect_prob = probs[-1].cpu().numpy()
+    # classe 1 = void
+    void_prob = probs[1].cpu().numpy()
 
-    defect_prob = cv2.GaussianBlur(defect_prob, (5,5), 0)
+    # NORMALISATION CRITIQUE
+    void_prob = cv2.normalize(
+        void_prob,
+        None,
+        0,
+        1,
+        cv2.NORM_MINMAX
+    )
 
-    # ⭐ adaptive threshold
-    t = np.percentile(defect_prob, percentile)
+    pred_mask = void_prob > threshold
 
-    defect_mask = defect_prob > t
-
-    return defect_mask, defect_prob
+    return pred_mask, void_prob
 
