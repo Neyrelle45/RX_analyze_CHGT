@@ -11,12 +11,12 @@ from engine.inference import load_model, predict_mask, find_largest_void
 
 
 st.set_page_config(layout="wide")
-st.title("RX Void Analyzer — Industrial Edition")
+st.title("PAD VOID ENGINE — Industrial AI")
 
 
-# =====================================================
-# SESSION STATE
-# =====================================================
+# ------------------------------------------------
+# SESSION
+# ------------------------------------------------
 
 if "results" not in st.session_state:
     st.session_state.results = []
@@ -25,222 +25,190 @@ if "saved_images" not in st.session_state:
     st.session_state.saved_images = []
 
 
-# =====================================================
-# SIDEBAR
-# =====================================================
-
-st.sidebar.header("Model")
-
-model_file = st.sidebar.file_uploader("Load model (.pth)", type=["pth"])
-mask_file = st.sidebar.file_uploader("Load inspection mask", type=["png", "jpg"])
+# ------------------------------------------------
+# CACHE MODEL
+# ------------------------------------------------
 
 @st.cache_resource
-def get_model(model_file):
-    return load_model(model_file)
+def get_model(file):
+    return load_model(file)
+
+
+@st.cache_data
+def cached_preprocess(img, contrast, clahe, gamma):
+    return preprocess_rx(img, contrast, clahe, gamma)
+
+
+# ------------------------------------------------
+# SIDEBAR
+# ------------------------------------------------
+
+model_file = st.sidebar.file_uploader("Model (.pth)", type="pth")
+mask_file = st.sidebar.file_uploader("Inspection mask", type=["png","jpg"])
+
+threshold = st.sidebar.slider("Void threshold",0.05,0.6,0.25,0.01)
+
+tx = st.sidebar.slider("Translate X",-80,80,0)
+ty = st.sidebar.slider("Translate Y",-80,80,0)
+scale = st.sidebar.slider("Scale",0.95,1.05,1.0,0.001)
+angle = st.sidebar.slider("Rotation",-3.0,3.0,0.0,0.1)
+
+contrast = st.sidebar.slider("Global contrast",1.0,2.2,1.5,0.05)
+clahe = st.sidebar.slider("Local contrast",1.0,4.0,2.0,0.1)
+gamma = st.sidebar.slider("Gamma",0.8,1.6,1.1,0.05)
+
+show_heatmap = st.sidebar.checkbox("Show heatmap", True)
+
+if st.sidebar.button("RESET results"):
+    st.session_state.results.clear()
+    st.session_state.saved_images.clear()
+
 
 model = get_model(model_file) if model_file else None
 
 
-st.sidebar.header("Detection")
-
-threshold = st.sidebar.slider("Void threshold", 0.05, 0.6, 0.25, 0.01)
-
-
-st.sidebar.header("Mask alignment")
-
-tx = st.sidebar.slider("Translate X", -80, 80, 0, 1)
-ty = st.sidebar.slider("Translate Y", -80, 80, 0, 1)
-
-scale = st.sidebar.slider("Scale", 0.95, 1.05, 1.0, 0.001)
-angle = st.sidebar.slider("Rotation", -3.0, 3.0, 0.0, 0.1)
-
-
-st.sidebar.header("RX preprocessing")
-
-contrast = st.sidebar.slider("Global contrast", 1.0, 2.2, 1.6, 0.05)
-clahe = st.sidebar.slider("Local contrast", 1.0, 4.0, 2.2, 0.1)
-gamma = st.sidebar.slider("Gamma", 0.8, 1.6, 1.1, 0.05)
-
-show_heatmap = st.sidebar.checkbox("Show defect heatmap", True)
-
-
-# =====================================================
-# IMAGE INPUT
-# =====================================================
-
-uploaded = st.file_uploader("RX image", type=["png", "jpg", "jpeg"])
-
+uploaded = st.file_uploader("RX image", type=["png","jpg","jpeg"])
 
 if uploaded and model:
 
     original = np.array(Image.open(uploaded).convert("RGB"))
 
-    tensor, processed = preprocess_rx(original, contrast, clahe, gamma)
-    pred_mask, heatmap = predict_mask(model, tensor, threshold)
+    tensor, processed = cached_preprocess(
+        original,
+        contrast,
+        clahe,
+        gamma
+    )
+
+    pred_mask, heatmap = predict_mask(
+        model,
+        tensor,
+        threshold
+    )
 
     h, w = processed.shape
 
-    # masque inspection par défaut
-    inspect_mask = np.ones((h, w), dtype=bool)
-
-    # =====================================================
-    # MASK ALIGNMENT
-    # =====================================================
+    inspect_mask = np.ones((h,w),dtype=bool)
 
     if mask_file:
 
-        mask_img = np.array(Image.open(mask_file).convert("L"))
-        mask_img = cv2.resize(mask_img, (w, h))
+        mask = np.array(Image.open(mask_file).convert("L"))
+        mask = cv2.resize(mask,(w,h))
 
-        M = cv2.getRotationMatrix2D((w//2, h//2), angle, scale)
-        M[:, 2] += [tx, ty]
+        M = cv2.getRotationMatrix2D((w//2,h//2),angle,scale)
+        M[:,2] += [tx,ty]
 
-        aligned = cv2.warpAffine(mask_img, M, (w, h))
+        aligned = cv2.warpAffine(mask,M,(w,h))
         inspect_mask = aligned > 127
 
         pred_mask &= inspect_mask
 
-    # =====================================================
-    # LARGEST VOID (APRES MASK !!)
-    # =====================================================
 
-    largest_void_mask, largest_void_area, ai_conf = find_largest_void(
+    largest, area, conf = find_largest_void(
         pred_mask,
         heatmap,
         inspect_mask
     )
 
-    # =====================================================
-    # OVERLAY (BGR SAFE)
-    # =====================================================
 
-    overlay = cv2.cvtColor(cv2.resize(original, (w, h)), cv2.COLOR_RGB2BGR)
+    overlay = cv2.resize(original,(w,h))
 
-    void_pixels = pred_mask
-    solder_pixels = (~pred_mask) & inspect_mask
+    overlay[pred_mask] = [255,0,0]
+    overlay[(~pred_mask)&inspect_mask] = [255,255,0]
 
-    overlay[void_pixels] = (0, 0, 255)       # rouge BGR
-    overlay[solder_pixels] = (0, 255, 255)   # jaune BGR
+    if largest is not None:
 
-    # cercle largest void
-    if largest_void_mask is not None:
-
-        coords = np.column_stack(np.where(largest_void_mask))
-        y, x = coords.mean(axis=0).astype(int)
-        radius = int(np.sqrt(largest_void_area / np.pi))
+        coords = np.column_stack(np.where(largest))
+        y,x = coords.mean(axis=0).astype(int)
+        radius = int(np.sqrt(area/np.pi))
 
         cv2.circle(
             overlay,
-            (x, y),
+            (x,y),
             radius,
-            (255, 255, 0),   # bleu ciel BGR
+            (235,206,135),
             4
         )
 
-    overlay = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
 
-    # =====================================================
-    # METRICS
-    # =====================================================
+    void_px = int(pred_mask.sum())
+    solder_px = int(((~pred_mask)&inspect_mask).sum())
 
-    void_count = np.sum(void_pixels)
-    solder_count = np.sum(solder_pixels)
+    ratio = void_px / (void_px + solder_px + 1e-6) * 100
 
-    denom = void_count + solder_count
-    manque_pct = (void_count / denom * 100) if denom > 0 else 0
 
-    df = {
-        "void_%": round(manque_pct, 2),
-        "largest_void_px": int(largest_void_area),
-        "IA_confidence_%": round(ai_conf * 100, 1),
-        "void_pixels": int(void_count),
-        "solder_pixels": int(solder_count)
-    }
+    col1,col2,col3 = st.columns(3)
 
-    # =====================================================
-    # DISPLAY
-    # =====================================================
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.image(original, caption="Original", use_container_width=True)
+    col1.image(original,use_container_width=True)
 
     mask_vis = original.copy()
-    mask_vis = cv2.resize(mask_vis, (w, h))
+    mask_vis = cv2.resize(mask_vis,(w,h))
     mask_vis[inspect_mask] = [0,255,0]
 
-    col2.image(mask_vis, caption="Mask aligned", use_container_width=True)
+    col2.image(mask_vis,use_container_width=True)
 
-    col3.image(overlay, caption="Detection", use_container_width=True)
-
-    if show_heatmap:
-
-        heatmap_vis = cv2.applyColorMap(
-            (heatmap * 255).astype(np.uint8),
-            cv2.COLORMAP_JET
-        )
-
-        display_heatmap = cv2.resize(
-            heatmap_vis,
-            (w//2, h//2),
-            interpolation=cv2.INTER_AREA
-        )
-
-        st.image(display_heatmap, use_container_width=False)
-
-
-    # =====================================================
-    # SAVE
-    # =====================================================
-
-    if st.button("Save inspection"):
-
-        st.session_state.results.append(df)
-
-        _, buffer = cv2.imencode(".png", cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR))
-        st.session_state.saved_images.append(buffer.tobytes())
-
-        st.success("Inspection saved ✔")
-
-
-# =====================================================
-# HISTORY (TOUJOURS EN BAS)
-# =====================================================
-
-st.divider()
-st.subheader("Inspection History")
-
-if len(st.session_state.results) == 0:
-
-    st.info("No inspection saved yet.")
-
-else:
-
-    results_df = pd.DataFrame(st.session_state.results)
-
-    def highlight_rows(row):
-
-        if row["void_%"] == results_df["void_%"].max():
-            return ['background-color: #ff4b4b'] * len(row)
-
-        if row["void_%"] == results_df["void_%"].min():
-            return ['background-color: #4b8bff'] * len(row)
-
-        return [''] * len(row)
-
-    st.dataframe(
-        results_df.style.apply(highlight_rows, axis=1),
+    col3.image(
+        overlay,
+        caption="RED=void | YELLOW=solder",
         use_container_width=True
     )
 
-    csv = results_df.to_csv(index=False).encode()
 
-    st.download_button("Download CSV", csv, "inspection_results.csv")
+    if show_heatmap:
 
-    zip_buffer = io.BytesIO()
+        heat = (heatmap*255).astype(np.uint8)
+        heat = cv2.applyColorMap(heat,cv2.COLORMAP_TURBO)
 
-    with zipfile.ZipFile(zip_buffer, "w") as z:
-        for i, img in enumerate(st.session_state.saved_images):
-            z.writestr(f"inspection_{i}.png", img)
+        heat = cv2.resize(
+            heat,
+            (w//2,h//2),
+            interpolation=cv2.INTER_AREA
+        )
 
-    st.download_button("Download images ZIP", zip_buffer.getvalue(), "inspections.zip")
+        st.image(heat)
+
+
+    df = pd.DataFrame([{
+        "void_%":round(ratio,2),
+        "largest_void_px":area,
+        "AI_confidence_%":round(conf*100,1),
+        "void_pixels":void_px,
+        "solder_pixels":solder_px
+    }])
+
+    st.dataframe(df)
+
+
+    if st.button("Save inspection"):
+
+        st.session_state.results.append(df.iloc[0])
+
+        _,buf = cv2.imencode(".png",overlay)
+        st.session_state.saved_images.append(buf.tobytes())
+
+
+if st.session_state.results:
+
+    hist = pd.DataFrame(st.session_state.results)
+    st.dataframe(hist)
+
+    csv = hist.to_csv(index=False).encode()
+
+    st.download_button(
+        "Download CSV",
+        csv,
+        "void_results.csv"
+    )
+
+    zbuf = io.BytesIO()
+
+    with zipfile.ZipFile(zbuf,"w") as z:
+        for i,img in enumerate(st.session_state.saved_images):
+            z.writestr(f"inspection_{i}.png",img)
+
+    st.download_button(
+        "Download images ZIP",
+        zbuf.getvalue(),
+        "void_images.zip"
+    )
+
