@@ -34,7 +34,11 @@ st.sidebar.header("Model")
 model_file = st.sidebar.file_uploader("Load model (.pth)", type=["pth"])
 mask_file = st.sidebar.file_uploader("Load inspection mask", type=["png", "jpg"])
 
-model = load_model(model_file) if model_file else None
+@st.cache_resource
+def get_model(model_file):
+    return load_model(model_file)
+
+model = get_model(model_file) if model_file else None
 
 
 st.sidebar.header("Detection")
