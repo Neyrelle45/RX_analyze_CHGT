@@ -138,6 +138,8 @@ if uploaded and model:
 
 
     void_px = int(pred_mask.sum())
+    inspect_area = inspect_mask.sum()
+    largest_void_pct = (area / inspect_area) * 100 if inspect_area > 0 else 0
     solder_px = int(((~pred_mask)&inspect_mask).sum())
 
     ratio = void_px / (void_px + solder_px + 1e-6) * 100
@@ -163,7 +165,7 @@ if uploaded and model:
     if show_heatmap:
 
         heat = (heatmap*255).astype(np.uint8)
-        heat = cv2.applyColorMap(heat,cv2.COLORMAP_TURBO)
+        heat = cv2.applyColorMap(heat,cv2.COLORMAP_INFERNO)
 
         heat = cv2.resize(
             heat,
