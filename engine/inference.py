@@ -5,17 +5,29 @@ import cv2
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ============================
-# LOAD MODEL (SAFE)
-# ============================
+# =====================================
+# SAFE MODEL LOADER (MODEL OR STATE_DICT)
+# =====================================
 
 def load_model(model_file):
-    model = torch.load(
-        model_file,
-        map_location=DEVICE
-    )
-    model.eval()
-    return model
+    obj = torch.load(model_file, map_location=DEVICE)
+
+    # CASE 1 — full model saved (torch.save(model))
+    if hasattr(obj, "forward"):
+        model = obj
+        model.to(DEVICE)
+        model.eval()
+        return model
+
+    # CASE 2 — state_dict saved (torch.save(model.state_dict()))
+    if isinstance(obj, dict):
+        raise RuntimeError(
+            "❌ Le fichier .pth contient un state_dict.\n"
+            "➡️ Charge le modèle avec la même classe UNet que pour l'entraînement "
+            "OU réexporte avec torch.save(model)."
+        )
+
+    raise RuntimeError("❌ Format de modèle non reconnu.")
 
 
 # ============================
