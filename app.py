@@ -7,216 +7,179 @@ import io
 from PIL import Image
 
 from engine.preprocessing import preprocess_rx
-from engine.inference import load_model, predict_mask, find_largest_void
-
+from engine.inference import (
+    load_model,
+    predict_mask,
+    find_largest_void
+)
 
 st.set_page_config(layout="wide")
 st.title("PAD VOID ENGINE — Industrial AI")
 
+# =========================
+# SESSION STATE
+# =========================
 
-# ------------------------------------------------
-# SESSION
-# ------------------------------------------------
+st.session_state.setdefault("results", [])
+st.session_state.setdefault("saved_images", [])
 
-if "results" not in st.session_state:
-    st.session_state.results = []
+# =========================
+# SIDEBAR — MODEL
+# =========================
 
-if "saved_images" not in st.session_state:
-    st.session_state.saved_images = []
+st.sidebar.header("Model")
 
+model_file = st.sidebar.file_uploader("Load model (.pth)", type=["pth"])
+mask_file = st.sidebar.file_uploader("Inspection mask", type=["png", "jpg"])
 
-# ------------------------------------------------
-# CACHE MODEL
-# ------------------------------------------------
+model = load_model(model_file) if model_file else None
 
-@st.cache_resource
-def get_model(file):
-    return load_model(file)
+# =========================
+# DETECTION
+# =========================
 
+st.sidebar.header("Detection")
 
-@st.cache_data
-def cached_preprocess(img, contrast, clahe, gamma):
-    return preprocess_rx(img, contrast, clahe, gamma)
+threshold = st.sidebar.slider("Void threshold", 0.05, 0.6, 0.25, 0.01)
+temperature = st.sidebar.slider("Softmax temperature", 1.0, 3.0, 1.6, 0.05)
 
+# =========================
+# MASK ALIGNMENT
+# =========================
 
-# ------------------------------------------------
-# SIDEBAR
-# ------------------------------------------------
+st.sidebar.header("Mask alignment")
 
-model_file = st.sidebar.file_uploader("Model (.pth)", type="pth")
-mask_file = st.sidebar.file_uploader("Inspection mask", type=["png","jpg"])
+tx = st.sidebar.slider("Translate X", -80, 80, 0, 1)
+ty = st.sidebar.slider("Translate Y", -80, 80, 0, 1)
+scale = st.sidebar.slider("Scale", 0.95, 1.05, 1.0, 0.001)
+angle = st.sidebar.slider("Rotation", -3.0, 3.0, 0.0, 0.1)
 
-threshold = st.sidebar.slider("Void threshold",0.05,0.6,0.25,0.01)
+# =========================
+# PREPROCESSING
+# =========================
 
-tx = st.sidebar.slider("Translate X",-80,80,0)
-ty = st.sidebar.slider("Translate Y",-80,80,0)
-scale = st.sidebar.slider("Scale",0.95,1.05,1.0,0.001)
-angle = st.sidebar.slider("Rotation",-3.0,3.0,0.0,0.1)
+st.sidebar.header("RX preprocessing")
 
-contrast = st.sidebar.slider("Global contrast",1.0,2.2,1.5,0.05)
-clahe = st.sidebar.slider("Local contrast",1.0,4.0,2.0,0.1)
-gamma = st.sidebar.slider("Gamma",0.8,1.6,1.1,0.05)
+contrast = st.sidebar.slider("Global contrast", 1.0, 2.2, 1.6, 0.05)
+clahe = st.sidebar.slider("Local contrast", 1.0, 4.0, 2.2, 0.1)
+gamma = st.sidebar.slider("Gamma", 0.8, 1.6, 1.1, 0.05)
 
-show_heatmap = st.sidebar.checkbox("Show heatmap", True)
+show_heatmap = st.sidebar.checkbox("Show defect heatmap", True)
 
-if st.sidebar.button("RESET results"):
-    st.session_state.results.clear()
-    st.session_state.saved_images.clear()
+# =========================
+# IMAGE INPUT
+# =========================
 
-
-model = get_model(model_file) if model_file else None
-
-
-uploaded = st.file_uploader("RX image", type=["png","jpg","jpeg"])
+uploaded = st.file_uploader("RX image", type=["png", "jpg", "jpeg"])
 
 if uploaded and model:
 
     original = np.array(Image.open(uploaded).convert("RGB"))
 
-    tensor, processed = cached_preprocess(
-        original,
-        contrast,
-        clahe,
-        gamma
+    tensor, processed = preprocess_rx(
+        original, contrast, clahe, gamma
     )
 
     pred_mask, heatmap = predict_mask(
-        model,
-        tensor,
-        threshold
+        model, tensor, threshold, temperature
     )
 
     h, w = processed.shape
+    inspect_mask = np.ones((h, w), dtype=bool)
 
-    inspect_mask = np.ones((h,w),dtype=bool)
-
+    # ---- optional inspection mask ----
     if mask_file:
+        mask_img = np.array(Image.open(mask_file).convert("L"))
+        mask_img = cv2.resize(mask_img, (w, h))
 
-        mask = np.array(Image.open(mask_file).convert("L"))
-        mask = cv2.resize(mask,(w,h))
+        M = cv2.getRotationMatrix2D((w//2, h//2), angle, scale)
+        M[:, 2] += [tx, ty]
 
-        M = cv2.getRotationMatrix2D((w//2,h//2),angle,scale)
-        M[:,2] += [tx,ty]
-
-        aligned = cv2.warpAffine(mask,M,(w,h))
-        # auto-detect mask polarity
-        white_ratio = (aligned > 127).mean()
-
-        if white_ratio > 0.5:
-            inspect_mask = aligned > 127
-        else:
-            inspect_mask = aligned < 127
-
+        aligned = cv2.warpAffine(mask_img, M, (w, h))
+        inspect_mask = aligned > 127
         pred_mask &= inspect_mask
 
-
-    largest, area, conf = find_largest_void(
-        pred_mask,
-        heatmap,
-        inspect_mask
+    # ---- largest real void ----
+    largest_mask, largest_area, ai_conf = find_largest_void(
+        pred_mask, heatmap, inspect_mask
     )
 
+    # =========================
+    # OVERLAY
+    # =========================
 
-    overlay = cv2.resize(original,(w,h))
+    overlay = cv2.resize(original, (w, h))
+    overlay[pred_mask] = [255, 0, 0]          # void = red
+    overlay[inspect_mask & ~pred_mask] = [255, 255, 0]  # solder = yellow
 
-    overlay[pred_mask] = [255,0,0]
-    overlay[(~pred_mask)&inspect_mask] = [255,255,0]
+    if largest_mask is not None:
+        y, x = np.mean(np.column_stack(np.where(largest_mask)), axis=0).astype(int)
+        r = int(np.sqrt(largest_area / np.pi))
+        cv2.circle(overlay, (x, y), r, (135, 206, 235), 4)
 
-    if largest is not None:
+    # =========================
+    # METRICS
+    # =========================
 
-        coords = np.column_stack(np.where(largest))
-        y,x = coords.mean(axis=0).astype(int)
-        radius = int(np.sqrt(area/np.pi))
+    void_px = int(np.sum(pred_mask))
+    solder_px = int(np.sum(inspect_mask) - void_px)
 
-        cv2.circle(
-            overlay,
-            (x,y),
-            radius,
-            (235,206,135),
-            4
-        )
-
-
-    void_px = int(pred_mask.sum())
-    inspect_area = inspect_mask.sum()
-    largest_void_pct = (area / inspect_area) * 100 if inspect_area > 0 else 0
-    solder_px = int(((~pred_mask)&inspect_mask).sum())
-
-    ratio = void_px / (void_px + solder_px + 1e-6) * 100
-
-
-    col1,col2,col3 = st.columns(3)
-
-    col1.image(original,use_container_width=True)
-
-    mask_vis = original.copy()
-    mask_vis = cv2.resize(mask_vis,(w,h))
-    mask_vis[inspect_mask] = [0,255,0]
-
-    col2.image(mask_vis,use_container_width=True)
-
-    col3.image(
-        overlay,
-        caption="RED=void | YELLOW=solder",
-        use_container_width=True
-    )
-
-
-    if show_heatmap:
-
-        heat = (heatmap*255).astype(np.uint8)
-        heat = cv2.applyColorMap(heat,cv2.COLORMAP_INFERNO)
-
-        heat = cv2.resize(
-            heat,
-            (w//2,h//2),
-            interpolation=cv2.INTER_AREA
-        )
-
-        st.image(heat)
-
+    void_pct = void_px / max(1, void_px + solder_px) * 100
+    largest_void_pct = largest_area / max(1, np.sum(inspect_mask)) * 100
 
     df = pd.DataFrame([{
-        "void_%":round(ratio,2),
-        "largest_void_%": round(largest_void_pct,2),
-        "AI_confidence_%":round(conf*100,1),
-        "void_pixels":void_px,
-        "solder_pixels":solder_px
+        "void_%": round(void_pct, 2),
+        "largest_void_%": round(largest_void_pct, 2),
+        "IA_confidence_%": round(ai_conf * 100, 1),
+        "void_pixels": void_px,
+        "solder_pixels": solder_px
     }])
 
-    st.dataframe(df)
+    # =========================
+    # DISPLAY
+    # =========================
 
+    c1, c2, c3 = st.columns(3)
+    c1.image(original, caption="Original", use_container_width=True)
+    c2.image(overlay, caption="Detection", use_container_width=True)
+
+    if show_heatmap:
+        hm = cv2.normalize(heatmap, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        hm = cv2.applyColorMap(hm, cv2.COLORMAP_JET)
+        c3.image(hm, caption="Void probability heatmap", use_container_width=True)
+
+    # =========================
+    # SAVE / TABLE
+    # =========================
 
     if st.button("Save inspection"):
-
         st.session_state.results.append(df.iloc[0])
-
-        _,buf = cv2.imencode(".png",overlay)
+        _, buf = cv2.imencode(".png", overlay)
         st.session_state.saved_images.append(buf.tobytes())
 
+    if st.session_state.results:
+        results_df = pd.DataFrame(st.session_state.results)
 
-if st.session_state.results:
+        def highlight(row):
+            if row["void_%"] == results_df["void_%"].max():
+                return ["background-color:#ff4b4b"] * len(row)
+            if row["void_%"] == results_df["void_%"].min():
+                return ["background-color:#4b8bff"] * len(row)
+            return [""] * len(row)
 
-    hist = pd.DataFrame(st.session_state.results)
-    st.dataframe(hist)
+        st.dataframe(results_df.style.apply(highlight, axis=1))
 
-    csv = hist.to_csv(index=False).encode()
+        csv = results_df.to_csv(index=False).encode()
+        st.download_button("Download CSV", csv, "inspection_results.csv")
 
-    st.download_button(
-        "Download CSV",
-        csv,
-        "void_results.csv"
-    )
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w") as z:
+            for i, img in enumerate(st.session_state.saved_images):
+                z.writestr(f"inspection_{i}.png", img)
 
-    zbuf = io.BytesIO()
+        st.download_button("Download images ZIP", zip_buf.getvalue(), "images.zip")
 
-    with zipfile.ZipFile(zbuf,"w") as z:
-        for i,img in enumerate(st.session_state.saved_images):
-            z.writestr(f"inspection_{i}.png",img)
-
-    st.download_button(
-        "Download images ZIP",
-        zbuf.getvalue(),
-        "void_images.zip"
-    )
+        if st.button("Clear history"):
+            st.session_state.results.clear()
+            st.session_state.saved_images.clear()
 
