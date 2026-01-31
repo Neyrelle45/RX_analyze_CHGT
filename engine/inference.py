@@ -1,79 +1,78 @@
 import torch
+import torch.nn.functional as F
 import numpy as np
 import cv2
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ------------------------------------------------
-# LOAD MODEL (SAFE + FAST)
-# ------------------------------------------------
+# ============================
+# LOAD MODEL (SAFE)
+# ============================
 
 def load_model(model_file):
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     model = torch.load(
         model_file,
-        map_location=device
+        map_location=DEVICE
     )
-
     model.eval()
-    model.to(device)
-
     return model
 
 
-# ------------------------------------------------
-# PREDICT
-# ------------------------------------------------
+# ============================
+# PREDICTION + TEMPERATURE
+# ============================
 
-def predict_mask(model, tensor, threshold):
+def predict_mask(
+    model,
+    tensor,
+    threshold=0.25,
+    temperature=1.6
+):
+    tensor = tensor.to(DEVICE)
 
-    device = next(model.parameters()).device
-    tensor = tensor.to(device)
+    with torch.no_grad():
+        logits = model(tensor)
 
-    with torch.inference_mode():
+        # Temperature scaling
+        logits = logits / temperature
 
-        if device.type == "cuda":
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
-                out = model(tensor)
-        else:
-            out = model(tensor)
+        probs = F.softmax(logits, dim=1)
 
-        probs = torch.softmax(out, dim=1)[0,1]
+    # class mapping (assumed)
+    # 0 = background
+    # 1 = solder
+    # 2 = void
+    void_prob = probs[0, 2].cpu().numpy()
 
-        heatmap = probs.detach().cpu().numpy()
+    pred_mask = void_prob > threshold
 
-        # ⭐ CONTRAST BOOST (CRUCIAL)
-        p1, p995 = np.percentile(heatmap, (1, 99.5))
-        heatmap = np.clip((heatmap - p1) / (p995 - p1 + 1e-6), 0, 1)
-        heatmap = np.clip((heatmap - p2) / (p98 - p2 + 1e-6), 0, 1)
-
-        pred_mask = heatmap > threshold
-
-    return pred_mask, heatmap
+    return pred_mask, void_prob
 
 
-# ------------------------------------------------
-# LARGEST VOID
-# ------------------------------------------------
+# ============================
+# LARGEST REAL VOID
+# ============================
 
 def find_largest_void(pred_mask, heatmap, inspect_mask):
+    masked = pred_mask & inspect_mask
 
-    mask = pred_mask & inspect_mask
+    labeled, n = cv2.connectedComponents(masked.astype(np.uint8))
 
-    mask = mask.astype(np.uint8)
+    largest_area = 0
+    largest_mask = None
+    confidence = 0.0
 
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+    for i in range(1, n):
+        comp = labeled == i
+        area = np.sum(comp)
 
-    if n <= 1:
-        return None, 0, 0
+        if area < 20:
+            continue  # ignore noise
 
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    idx = np.argmax(areas) + 1
+        if area > largest_area:
+            largest_area = area
+            largest_mask = comp
+            confidence = float(np.mean(heatmap[comp]))
 
-    largest = labels == idx
-    area = areas[idx-1]
+    return largest_mask, largest_area, confidence
 
-    confidence = float(heatmap[largest].mean())
-
-    return largest, area, confidence
