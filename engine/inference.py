@@ -44,7 +44,8 @@ def predict_mask(model, tensor, threshold):
         heatmap = probs.detach().cpu().numpy()
 
         # ⭐ CONTRAST BOOST (CRUCIAL)
-        p2, p98 = np.percentile(heatmap, (2, 98))
+        p1, p995 = np.percentile(heatmap, (1, 99.5))
+        heatmap = np.clip((heatmap - p1) / (p995 - p1 + 1e-6), 0, 1)
         heatmap = np.clip((heatmap - p2) / (p98 - p2 + 1e-6), 0, 1)
 
         pred_mask = heatmap > threshold
