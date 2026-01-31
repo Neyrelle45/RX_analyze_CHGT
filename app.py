@@ -99,7 +99,13 @@ if uploaded and model:
         M[:,2] += [tx,ty]
 
         aligned = cv2.warpAffine(mask,M,(w,h))
-        inspect_mask = aligned > 127
+        # auto-detect mask polarity
+        white_ratio = (aligned > 127).mean()
+
+        if white_ratio > 0.5:
+            inspect_mask = aligned > 127
+        else:
+            inspect_mask = aligned < 127
 
         pred_mask &= inspect_mask
 
