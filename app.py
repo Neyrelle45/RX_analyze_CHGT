@@ -178,7 +178,7 @@ if uploaded and model:
 
     df = pd.DataFrame([{
         "void_%":round(ratio,2),
-        "largest_void_px":area,
+        "largest_void_%": round(largest_void_pct,2),
         "AI_confidence_%":round(conf*100,1),
         "void_pixels":void_px,
         "solder_pixels":solder_px
