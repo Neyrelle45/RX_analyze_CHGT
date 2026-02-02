@@ -46,7 +46,7 @@ st.sidebar.header("Mask alignment")
 
 tx = st.sidebar.slider("Translate X", -80, 80, 0, 1)
 ty = st.sidebar.slider("Translate Y", -80, 80, 0, 1)
-scale = st.sidebar.slider("Scale", 0.95, 1.05, 1.0, 0.001)
+scale = st.sidebar.slider("Scale", 0.895, 1.15, 1.0, 0.001)
 angle = st.sidebar.slider("Rotation", -3.0, 3.0, 0.0, 0.1)
 
 # =====================================================
@@ -147,7 +147,13 @@ if uploaded and model:
         hm = (heatmap * 255).astype(np.uint8)
         hm = cv2.applyColorMap(hm, cv2.COLORMAP_JET)
         hm = cv2.resize(hm, (W0, H0))
-        st.image(hm, caption="Void probability heatmap", use_container_width=True)
+        st.markdown("### Void probability heatmap")
+        col_hm1, col_hm2, col_hm3 = st.columns([1,2,1])
+        col_hm2.image(
+        hm,
+        caption="Void probability heatmap",
+        use_container_width=True
+        )
 
     # =====================================================
     # METRICS
