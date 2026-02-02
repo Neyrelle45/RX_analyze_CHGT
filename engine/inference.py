@@ -64,17 +64,23 @@ def predict_mask(
 
 def find_largest_void(pred_mask, heatmap, inspect_mask):
 
-    mask = pred_mask & inspect_mask
-    labels, n = cv2.connectedComponents(mask.astype(np.uint8))
+    # masque final
+    mask = (pred_mask & inspect_mask).astype(np.uint8)
+
+    # connected components (ordre CORRECT)
+    num_labels, labels = cv2.connectedComponents(mask)
 
     largest_area = 0
     largest_mask = None
     confidence = 0.0
 
-    for i in range(1, n):
-        comp = labels == i
-        area = comp.sum()
+    # label 0 = background → on commence à 1
+    for i in range(1, num_labels):
 
+        comp = labels == i
+        area = int(comp.sum())
+
+        # filtrage bruit
         if area < 20:
             continue
 
