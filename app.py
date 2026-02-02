@@ -9,8 +9,14 @@ from PIL import Image
 from engine.preprocessing import preprocess_rx
 from engine.inference import load_model, predict_mask, find_largest_void
 
+
+# =====================================================
+# PAGE
+# =====================================================
+
 st.set_page_config(layout="wide")
 st.title("PAD VOID ENGINE — Industrial AI")
+
 
 # =====================================================
 # SESSION STATE
@@ -21,6 +27,7 @@ if "results" not in st.session_state:
 
 if "images" not in st.session_state:
     st.session_state.images = []
+
 
 # =====================================================
 # SIDEBAR — MODEL
@@ -33,8 +40,9 @@ mask_file = st.sidebar.file_uploader("Inspection mask", type=["png", "jpg"])
 
 model = load_model(model_file) if model_file else None
 
+
 # =====================================================
-# DETECTION
+# SIDEBAR — DETECTION
 # =====================================================
 
 st.sidebar.header("Detection")
@@ -42,8 +50,9 @@ st.sidebar.header("Detection")
 threshold = st.sidebar.slider("Void threshold", 0.05, 0.6, 0.25, 0.01)
 temperature = st.sidebar.slider("Softmax temperature", 0.7, 2.0, 1.2, 0.05)
 
+
 # =====================================================
-# MASK ALIGNMENT
+# SIDEBAR — MASK ALIGNMENT
 # =====================================================
 
 st.sidebar.header("Mask alignment")
@@ -53,8 +62,9 @@ ty = st.sidebar.slider("Translate Y", -80, 80, 0, 1)
 scale = st.sidebar.slider("Scale", 0.85, 1.15, 1.0, 0.005)
 angle = st.sidebar.slider("Rotation", -3.0, 3.0, 0.0, 0.1)
 
+
 # =====================================================
-# RX PREPROCESSING
+# SIDEBAR — RX PREPROCESSING
 # =====================================================
 
 st.sidebar.header("RX preprocessing")
@@ -64,6 +74,7 @@ clahe = st.sidebar.slider("Local contrast", 1.0, 4.0, 2.2, 0.1)
 gamma = st.sidebar.slider("Gamma", 0.8, 1.6, 1.1, 0.05)
 
 show_heatmap = st.sidebar.checkbox("Show void probability heatmap", True)
+
 
 # =====================================================
 # IMAGE INPUT
@@ -84,7 +95,10 @@ if uploaded and model:
 
     h, w = processed.shape
 
-    # Inspection mask
+    # =====================================================
+    # INSPECTION MASK
+    # =====================================================
+
     inspect_mask = np.ones((h, w), dtype=bool)
 
     if mask_file:
@@ -98,15 +112,34 @@ if uploaded and model:
         inspect_mask = m > 127
         pred_mask &= inspect_mask
 
-    # Largest void
+
+    # =====================================================
+    # LARGEST VOID
+    # =====================================================
+
     largest_mask, largest_area, ai_conf = find_largest_void(
         pred_mask, heatmap, inspect_mask
     )
 
-    # Overlay (ratio preserved)
+
+    # =====================================================
+    # OVERLAY (RATIO SAFE)
+    # =====================================================
+
     overlay = cv2.resize(original, (w, h))
-    overlay[pred_mask] = [255, 0, 0]      # VOID
-    overlay[inspect_mask & ~pred_mask] = [255, 255, 0]  # SOLDER
+
+    alpha = 0.75
+
+    solder = inspect_mask & ~pred_mask
+    void = pred_mask
+
+    overlay[solder] = (
+        overlay[solder] * (1 - alpha) + np.array([255, 255, 0]) * alpha
+    )
+
+    overlay[void] = (
+        overlay[void] * (1 - alpha) + np.array([255, 0, 0]) * alpha
+    )
 
     if largest_mask is not None:
         contours, _ = cv2.findContours(
@@ -116,25 +149,40 @@ if uploaded and model:
         )
         cv2.drawContours(overlay, contours, -1, (135, 206, 235), 3)
 
-    # Metrics
-    void_px = int(np.sum(pred_mask))
-    solder_px = int(np.sum(inspect_mask & ~pred_mask))
+
+    # =====================================================
+    # METRICS
+    # =====================================================
+
+    void_px = int(np.sum(void))
+    solder_px = int(np.sum(solder))
     total_px = void_px + solder_px
 
     void_pct = (void_px / total_px * 100) if total_px else 0
     largest_void_pct = (largest_area / total_px * 100) if total_px else 0
 
-    # DISPLAY
-    c1, c2, c3 = st.columns(3)
-    c1.image(original, caption="Original", use_container_width=True)
-    c2.image(overlay, caption="Detection", use_container_width=True)
+
+    # =====================================================
+    # DISPLAY (FIXED SIZE)
+    # =====================================================
+
+    IMG_W = 350
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.image(original, caption="Original", width=IMG_W)
+    col2.image(overlay, caption="Detection", width=IMG_W)
 
     if show_heatmap:
         hm = cv2.applyColorMap((heatmap * 255).astype(np.uint8), cv2.COLORMAP_JET)
         hm = cv2.resize(hm, (w, h))
-        c3.image(hm, caption="Void probability heatmap", use_container_width=True)
+        col3.image(hm, caption="Void probability heatmap", width=IMG_W)
 
-    # TABLE
+
+    # =====================================================
+    # SAVE / TABLE
+    # =====================================================
+
     row = {
         "void_%": round(void_pct, 2),
         "largest_void_%": round(largest_void_pct, 2),
@@ -153,12 +201,11 @@ if uploaded and model:
         df = pd.DataFrame(st.session_state.results)
 
         def highlight(r):
-            styles = [""] * len(r)
             if r["void_%"] == df["void_%"].max():
-                styles = ["background-color:#ff4b4b"] * len(r)
+                return ["background-color:#ff4b4b"] * len(r)
             if r["void_%"] == df["void_%"].min():
-                styles = ["background-color:#4b8bff"] * len(r)
-            return styles
+                return ["background-color:#4b8bff"] * len(r)
+            return [""] * len(r)
 
         st.dataframe(df.style.apply(highlight, axis=1))
 
@@ -180,5 +227,5 @@ if uploaded and model:
         )
 
         if st.button("Clear results"):
-            st.session_state.results = []
-            st.session_state.images = []
+            st.session_state.results.clear()
+            st.session_state.images.clear()
