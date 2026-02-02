@@ -3,36 +3,39 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 
+from engine.model import UNet  # DOIT être le même UNet que pour l'entraînement
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# =====================================
-# SAFE MODEL LOADER (MODEL OR STATE_DICT)
-# =====================================
+
+# ======================================================
+# LOAD MODEL (STREAMLIT / COLAB SAFE)
+# ======================================================
 
 def load_model(model_file):
-    obj = torch.load(model_file, map_location=DEVICE)
 
-    # CASE 1 — full model saved (torch.save(model))
-    if hasattr(obj, "forward"):
-        model = obj
-        model.to(DEVICE)
-        model.eval()
-        return model
+    checkpoint = torch.load(
+        model_file,
+        map_location=DEVICE
+    )
 
-    # CASE 2 — state_dict saved (torch.save(model.state_dict()))
-    if isinstance(obj, dict):
+    if not isinstance(checkpoint, dict) or "model_state" not in checkpoint:
         raise RuntimeError(
-            "❌ Le fichier .pth contient un state_dict.\n"
-            "➡️ Charge le modèle avec la même classe UNet que pour l'entraînement "
-            "OU réexporte avec torch.save(model)."
+            "❌ Modèle invalide.\n"
+            "➡️ Le fichier doit contenir un checkpoint avec 'model_state'."
         )
 
-    raise RuntimeError("❌ Format de modèle non reconnu.")
+    model = UNet()
+    model.load_state_dict(checkpoint["model_state"])
+    model.to(DEVICE)
+    model.eval()
+
+    return model
 
 
-# ============================
-# PREDICTION + TEMPERATURE
-# ============================
+# ======================================================
+# PREDICTION (AVEC TEMPERATURE SCALING)
+# ======================================================
 
 def predict_mask(
     model,
@@ -44,16 +47,10 @@ def predict_mask(
 
     with torch.no_grad():
         logits = model(tensor)
-
-        # Temperature scaling
         logits = logits / temperature
-
         probs = F.softmax(logits, dim=1)
 
-    # class mapping (assumed)
-    # 0 = background
-    # 1 = solder
-    # 2 = void
+    # Convention : 0=background, 1=solder, 2=void
     void_prob = probs[0, 2].cpu().numpy()
 
     pred_mask = void_prob > threshold
@@ -61,30 +58,31 @@ def predict_mask(
     return pred_mask, void_prob
 
 
-# ============================
-# LARGEST REAL VOID
-# ============================
+# ======================================================
+# LARGEST REAL VOID (ENCAPSULÉ)
+# ======================================================
 
 def find_largest_void(pred_mask, heatmap, inspect_mask):
-    masked = pred_mask & inspect_mask
 
-    labeled, n = cv2.connectedComponents(masked.astype(np.uint8))
+    mask = pred_mask & inspect_mask
+    labels, n = cv2.connectedComponents(mask.astype(np.uint8))
 
     largest_area = 0
     largest_mask = None
     confidence = 0.0
 
     for i in range(1, n):
-        comp = labeled == i
-        area = np.sum(comp)
+        comp = labels == i
+        area = comp.sum()
 
         if area < 20:
-            continue  # ignore noise
+            continue
 
         if area > largest_area:
             largest_area = area
             largest_mask = comp
-            confidence = float(np.mean(heatmap[comp]))
+            confidence = float(heatmap[comp].mean())
 
     return largest_mask, largest_area, confidence
+
 
