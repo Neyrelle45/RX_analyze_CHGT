@@ -3,92 +3,63 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 
-from engine.model import UNet  # DOIT être le même UNet que pour l'entraînement
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# -------------------------------------------------
+# MODEL LOADING (SAFE)
+# -------------------------------------------------
 
+def load_model(model_file, device=None):
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ======================================================
-# LOAD MODEL (STREAMLIT / COLAB SAFE)
-# ======================================================
-
-def load_model(model_file):
-
-    checkpoint = torch.load(
-        model_file,
-        map_location=DEVICE
-    )
-
-    if not isinstance(checkpoint, dict) or "model_state" not in checkpoint:
-        raise RuntimeError(
-            "❌ Modèle invalide.\n"
-            "➡️ Le fichier doit contenir un checkpoint avec 'model_state'."
-        )
-
-    model = UNet()
-    model.load_state_dict(checkpoint["model_state"])
-    model.to(DEVICE)
+    model = torch.load(model_file, map_location=device)
     model.eval()
-
     return model
 
 
-# ======================================================
-# PREDICTION (AVEC TEMPERATURE SCALING)
-# ======================================================
+# -------------------------------------------------
+# PREDICTION
+# -------------------------------------------------
 
-def predict_mask(
-    model,
-    tensor,
-    threshold=0.25,
-    temperature=1.6
-):
-    tensor = tensor.to(DEVICE)
-
+def predict_mask(model, tensor, threshold=0.25, temperature=1.0):
     with torch.no_grad():
         logits = model(tensor)
+
         logits = logits / temperature
         probs = F.softmax(logits, dim=1)
 
-    # Convention : 0=background, 1=solder, 2=void
-    void_prob = probs[0, 2].cpu().numpy()
+        void_prob = probs[0, 1].cpu().numpy()  # class 1 = VOID
 
-    pred_mask = void_prob > threshold
+        pred_mask = void_prob > threshold
 
     return pred_mask, void_prob
 
 
-# ======================================================
-# LARGEST REAL VOID (ENCAPSULÉ)
-# ======================================================
+# -------------------------------------------------
+# LARGEST VOID
+# -------------------------------------------------
 
-def find_largest_void(pred_mask, heatmap, inspect_mask):
+def find_largest_void(void_mask, heatmap, inspect_mask):
+    mask = void_mask & inspect_mask
 
-    # masque final
-    mask = (pred_mask & inspect_mask).astype(np.uint8)
-
-    # connected components (ordre CORRECT)
-    num_labels, labels = cv2.connectedComponents(mask)
+    mask = mask.astype(np.uint8)
+    num, labels = cv2.connectedComponents(mask)
 
     largest_area = 0
-    largest_mask = None
-    confidence = 0.0
+    largest_label = None
 
-    # label 0 = background → on commence à 1
-    for i in range(1, num_labels):
-
-        comp = labels == i
-        area = int(comp.sum())
-
-        # filtrage bruit
-        if area < 20:
-            continue
-
+    for i in range(1, num):
+        area = np.sum(labels == i)
         if area > largest_area:
             largest_area = area
-            largest_mask = comp
-            confidence = float(heatmap[comp].mean())
+            largest_label = i
 
-    return largest_mask, largest_area, confidence
+    if largest_label is None:
+        return None, 0, 0.0
 
+    largest_mask = labels == largest_label
 
+    # IA confidence = mean prob on largest void
+    ai_conf = float(np.mean(heatmap[largest_mask]))
+
+    return largest_mask, largest_area, ai_conf
