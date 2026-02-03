@@ -290,3 +290,4 @@ if uploaded and model:
             zip_buf.getvalue(),
             "inspection_images.zip"
         )
+
