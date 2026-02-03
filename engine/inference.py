@@ -3,24 +3,15 @@ import torch.nn.functional as F
 import numpy as np
 import cv2
 
-# ⚠️ adapte si besoin le chemin exact
-from engine.unet import UNet
-
 
 # =================================================
-# MODEL LOADING — DEFINITIVE / NO REGRESSION
+# MODEL LOADING — STREAMLIT SAFE
 # =================================================
 
 def load_model(model_file, device=None):
     """
-    Compatible avec :
-    1) torch.save(model)
-    2) torch.save(model.state_dict())
-    3) torch.save({
-           "model_state": state_dict,
-           "model_name": "UNet",
-           "n_classes": 3
-       })
+    Loader STRICTEMENT compatible avec ton entraînement Colab.
+    Ne dépend PAS du code UNet côté app.
     """
 
     if device is None:
@@ -29,7 +20,18 @@ def load_model(model_file, device=None):
     checkpoint = torch.load(model_file, map_location=device)
 
     # -------------------------------------------------
-    # Case 1 — full nn.Module
+    # Cas attendu : checkpoint d'entraînement
+    # -------------------------------------------------
+    if isinstance(checkpoint, dict) and "model_state" in checkpoint:
+        raise RuntimeError(
+            "❌ Le modèle a été sauvegardé comme state_dict.\n\n"
+            "➡️ Pour l'inférence Streamlit, tu dois sauvegarder le modèle COMPLET :\n\n"
+            "   torch.save(model, 'best_model.pth')\n\n"
+            "Cela évite toute dépendance au code UNet."
+        )
+
+    # -------------------------------------------------
+    # Cas valide : modèle complet
     # -------------------------------------------------
     if isinstance(checkpoint, torch.nn.Module):
         model = checkpoint.to(device)
@@ -37,38 +39,11 @@ def load_model(model_file, device=None):
         return model
 
     # -------------------------------------------------
-    # Case 2 — state_dict only
-    # -------------------------------------------------
-    if isinstance(checkpoint, dict) and all(
-        k.startswith(("encoder", "decoder", "conv", "down", "up"))
-        for k in checkpoint.keys()
-    ):
-        model = UNet().to(device)
-        model.load_state_dict(checkpoint)
-        model.eval()
-        return model
-
-    # -------------------------------------------------
-    # Case 3 — TRAINING CHECKPOINT (TON CAS)
-    # -------------------------------------------------
-    if isinstance(checkpoint, dict) and "model_state" in checkpoint:
-
-        n_classes = checkpoint.get("n_classes", 3)
-
-        model = UNet(n_classes=n_classes).to(device)
-        model.load_state_dict(checkpoint["model_state"])
-        model.eval()
-        return model
-
-    # -------------------------------------------------
-    # Unsupported
+    # Cas invalide
     # -------------------------------------------------
     raise RuntimeError(
-        "Format de modèle non supporté.\n"
-        "Le .pth doit contenir :\n"
-        "- un torch.nn.Module\n"
-        "- un state_dict\n"
-        "- ou un dict avec 'model_state'"
+        "❌ Format de modèle non supporté.\n"
+        "Le fichier .pth doit contenir un modèle torch.nn.Module complet."
     )
 
 
@@ -77,23 +52,14 @@ def load_model(model_file, device=None):
 # =================================================
 
 def predict_mask(model, tensor, threshold=0.25, temperature=1.0):
-    """
-    Returns:
-    - pred_mask (bool)
-    - void_probability heatmap (float 0..1)
-    """
-
     with torch.no_grad():
         logits = model(tensor)
 
-        # Temperature scaling (safe)
         logits = logits / max(temperature, 1e-6)
-
         probs = F.softmax(logits, dim=1)
 
-        # Convention entraînement : classe 1 = VOID
+        # Convention : classe 1 = VOID
         void_prob = probs[0, 1].cpu().numpy()
-
         pred_mask = void_prob >= threshold
 
     return pred_mask, void_prob
@@ -104,12 +70,6 @@ def predict_mask(model, tensor, threshold=0.25, temperature=1.0):
 # =================================================
 
 def find_largest_void(void_mask, heatmap, inspect_mask=None):
-    """
-    Returns:
-    - largest_void_mask (bool or None)
-    - largest_area_px (int)
-    - ai_confidence (float 0..1)
-    """
 
     if inspect_mask is None:
         inspect_mask = np.ones_like(void_mask, dtype=bool)
@@ -134,7 +94,7 @@ def find_largest_void(void_mask, heatmap, inspect_mask=None):
         return None, 0, 0.0
 
     largest_void_mask = labels == largest_label
-
     ai_conf = float(np.mean(heatmap[largest_void_mask]))
 
     return largest_void_mask, int(largest_area), ai_conf
+
