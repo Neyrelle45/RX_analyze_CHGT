@@ -46,7 +46,7 @@ st.sidebar.header("Mask alignment")
 
 tx = st.sidebar.slider("Translate X", -80, 80, 0, 1)
 ty = st.sidebar.slider("Translate Y", -80, 80, 0, 1)
-scale = st.sidebar.slider("Scale", 0.95, 1.05, 1.0, 0.001)
+scale = st.sidebar.slider("Scale", 0.85, 1.15, 1.0, 0.002)
 angle = st.sidebar.slider("Rotation", -3.0, 3.0, 0.0, 0.1)
 
 # =====================================================
@@ -70,7 +70,7 @@ if uploaded and model:
     original = np.array(Image.open(uploaded).convert("RGB"))
     H0, W0 = original.shape[:2]
 
-    # --- PREPROCESS (network space)
+    # --- PREPROCESS
     tensor, processed = preprocess_rx(original, contrast, clahe, gamma)
 
     # --- PREDICT
@@ -95,7 +95,6 @@ if uploaded and model:
 
         aligned = cv2.warpAffine(mask_img, M, (w, h))
         inspect_mask = aligned > 127
-
         pred_mask &= inspect_mask
 
     # =====================================================
@@ -109,24 +108,22 @@ if uploaded and model:
     largest_void_pct = (largest_area / inspect_area * 100) if inspect_area > 0 else 0
 
     # =====================================================
-    # OVERLAY (DISPLAY SPACE)
+    # OVERLAY
     # =====================================================
     overlay = cv2.resize(original, (w, h))
 
     void_pixels   = pred_mask
     solder_pixels = inspect_mask & (~pred_mask)
 
-    overlay[void_pixels]   = [255, 0, 0]     # VOID = RED
-    overlay[solder_pixels] = [255, 255, 0]   # SOLDER = YELLOW
+    overlay[void_pixels]   = [255, 0, 0]
+    overlay[solder_pixels] = [255, 255, 0]
 
     if largest_mask is not None:
         ys, xs = np.where(largest_mask)
         cy, cx = ys.mean().astype(int), xs.mean().astype(int)
         r = int(np.sqrt(largest_area / np.pi))
-
         cv2.circle(overlay, (cx, cy), r, (135,206,235), 4)
 
-    # resize overlays back to original ratio
     overlay_disp = cv2.resize(overlay, (W0, H0))
 
     # =====================================================
@@ -136,8 +133,7 @@ if uploaded and model:
 
     col1.image(original, caption="Original", use_container_width=True)
 
-    mask_vis = original.copy()
-    mask_vis = cv2.resize(mask_vis, (w, h))
+    mask_vis = cv2.resize(original, (w, h))
     mask_vis[inspect_mask] = [0,255,0]
     col2.image(cv2.resize(mask_vis, (W0, H0)), caption="Mask aligned", use_container_width=True)
 
@@ -146,8 +142,8 @@ if uploaded and model:
     if show_heatmap:
         hm = (heatmap * 255).astype(np.uint8)
         hm = cv2.applyColorMap(hm, cv2.COLORMAP_JET)
-        hm = cv2.resize(hm, (W0, H0))
-        st.image(hm, caption="Void probability heatmap", use_container_width=True)
+        hm_disp = cv2.resize(hm, (int(W0*0.6), int(H0*0.6)))
+        st.image(hm_disp, caption="Void probability heatmap", use_container_width=False)
 
     # =====================================================
     # METRICS
@@ -164,9 +160,6 @@ if uploaded and model:
         "solder_pixels": solder_count
     }
 
-    # =====================================================
-    # SAVE INSPECTION
-    # =====================================================
     if st.button("Save inspection"):
         st.session_state.results.append(row)
         _, buf = cv2.imencode(".png", overlay_disp)
