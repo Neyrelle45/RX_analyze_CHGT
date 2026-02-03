@@ -138,4 +138,3 @@ def find_largest_void(void_mask, heatmap, inspect_mask=None):
     ai_conf = float(np.mean(heatmap[largest_void_mask]))
 
     return largest_void_mask, int(largest_area), ai_conf
-
