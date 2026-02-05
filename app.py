@@ -83,6 +83,12 @@ if uploaded and model:
     with torch.no_grad():
         logits = model(tensor)
         pred = torch.argmax(logits, dim=1)[0].cpu().numpy()
+
+    void_mask   = (pred == 1)
+    solder_mask = (pred == 2)
+    copper_mask = (pred == 3)
+
+    
     h, w = processed.shape
     # =====================================================
     # CLASSES
