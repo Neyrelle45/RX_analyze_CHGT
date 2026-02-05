@@ -4,6 +4,7 @@ import cv2
 import pandas as pd
 import zipfile
 import io
+import torch
 from PIL import Image
 
 from engine.preprocessing import preprocess_rx
