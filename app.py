@@ -84,7 +84,13 @@ if uploaded and model:
         logits = model(tensor)
         pred = torch.argmax(logits, dim=1)[0].cpu().numpy()
     h, w = processed.shape
-
+    # =====================================================
+    # CLASSES
+    # =====================================================
+    
+    void_mask   = (pred == 1)
+    solder_mask = (pred == 2)
+    copper_mask = (pred == 3)
     # --- INSPECTION MASK
     inspect_mask = np.ones((h, w), dtype=bool)
 
