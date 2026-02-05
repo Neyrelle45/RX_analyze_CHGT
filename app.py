@@ -81,8 +81,8 @@ if uploaded and model:
         temperature
     )
     with torch.no_grad():
-    logits = model(tensor)
-    pred = torch.argmax(logits, dim=1)[0].cpu().numpy()
+        logits = model(tensor)
+        pred = torch.argmax(logits, dim=1)[0].cpu().numpy()
     h, w = processed.shape
 
     # --- INSPECTION MASK
