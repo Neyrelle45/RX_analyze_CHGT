@@ -80,7 +80,9 @@ if uploaded and model:
         threshold,
         temperature
     )
-
+    with torch.no_grad():
+    logits = model(tensor)
+    pred = torch.argmax(logits, dim=1)[0].cpu().numpy()
     h, w = processed.shape
 
     # --- INSPECTION MASK
@@ -95,13 +97,16 @@ if uploaded and model:
 
         aligned = cv2.warpAffine(mask_img, M, (w, h))
         inspect_mask = aligned > 127
-        pred_mask &= inspect_mask
+        void_mask   &= inspect_mask
+        solder_mask &= inspect_mask
+        copper_mask &= inspect_mask
+
 
     # =====================================================
     # LARGEST VOID
     # =====================================================
     largest_mask, largest_area, ai_conf = find_largest_void(
-        pred_mask, heatmap, inspect_mask
+    void_mask, heatmap, inspect_mask
     )
 
     inspect_area = inspect_mask.sum()
@@ -112,11 +117,10 @@ if uploaded and model:
     # =====================================================
     overlay = cv2.resize(original, (w, h))
 
-    void_pixels   = pred_mask
-    solder_pixels = inspect_mask & (~pred_mask)
+    overlay[void_mask]   = [255, 0, 0]     # VOID = rouge
+    overlay[solder_mask] = [255, 255, 0]   # SOUDURE = jaune
+    overlay[copper_mask] = [0, 0, 255]     # CUIVRE = bleu
 
-    overlay[void_pixels]   = [255, 0, 0]
-    overlay[solder_pixels] = [255, 255, 0]
 
     if largest_mask is not None:
         ys, xs = np.where(largest_mask)
@@ -148,8 +152,9 @@ if uploaded and model:
     # =====================================================
     # METRICS
     # =====================================================
-    void_count   = int(void_pixels.sum())
-    solder_count = int(solder_pixels.sum())
+    void_count   = int(void_mask.sum())
+    solder_count = int(solder_mask.sum())
+
     manque_pct   = (void_count / (void_count + solder_count) * 100) if (void_count + solder_count) else 0
 
     row = {
