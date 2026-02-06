@@ -126,8 +126,8 @@ if uploaded and model:
     # -----------------------------
     # BASE MASKS
     # -----------------------------
-    solder_mask = (pred == 1)
-    void_mask   = (pred == 2)
+    solder_mask = (pred == 2)
+    void_mask   = (pred == 1)
     copper_mask = (pred == 3)
 
     # -----------------------------
