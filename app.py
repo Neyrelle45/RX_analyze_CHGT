@@ -87,7 +87,7 @@ if uploaded and model:
             pred   = np.argmax(probs, axis=0)
 
         st.session_state.cached_pred     = pred
-        st.session_state.cached_heatmap = probs[1]  # VOID
+        st.session_state.cached_heatmap = probs[2]  # VOID
         st.session_state.cached_image_id = uploaded.name
 
     pred     = st.session_state.cached_pred
@@ -97,8 +97,9 @@ if uploaded and model:
     # =================================================
     # CLASSES
     # =================================================
-    void_mask   = (pred == 1)
-    solder_mask = (pred == 2)
+
+    solder_mask = (pred == 1)
+    void_mask   = (pred == 2)
     copper_mask = (pred == 3)
 
     # =================================================
